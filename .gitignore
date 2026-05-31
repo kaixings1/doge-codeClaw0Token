@@ -12,6 +12,7 @@ build/
 *.bun-build/
 .bun-build/
 .*.bun-build
+node_modules/
 
 # IDE & Editor
 .idea/
@@ -63,3 +64,4 @@ latest/
 !.claude/settings.json
 .claude/settings.local.json
 CLAUDE.local.md
+plugins--/
