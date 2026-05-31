@@ -15,17 +15,29 @@
 
 ### 开发与运行
 
-
+- `bun run dev` - 启动 TUI 开发模式
+- `bun run start` - 启动应用（同 dev）
+- `bun run version` - 输出版本信息
+- `bun run ./src/bootstrap-entry.ts` - 直接入口启动
+- `d.bat` - Windows 快速启动（预设环境变量）
 
 ### 安装与构建
 
-
+- `bun install` - 安装依赖
+- `bun link` - 全局注册为 `doge` 命令
+- `install.bat` - Windows 一键安装（安装依赖 + 注册）
+- `complie.bat` - 编译为 `doge.exe` 独立可执行文件
 
 ### 测试
 
-
+- `bun test` - 运行所有测试
+- `bun test <file>` - 运行单个测试文件（如 `bun test src/commands/plugin/__tests__/parseArgs.test.ts`）
 
 ### 汉化工作流
+
+- `./check_untranslated.sh` - 扫描未汉化的英文注释
+- `_replacements.json` - 批量文本替换配置
+- `Temp/english_comment_files*.txt` - 待汉化文件位置记录
 
 项目持续进行汉化，检查脚本位于根目录:
 
@@ -84,13 +96,39 @@ tools/ (工具执行)
 启动时通过 `d.bat` 设置。关键变量:
 - `STREAM_FLUSH_MS=150`: 流式响应刷新间隔
 - `CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000`: 最大上下文 token
-- `CLAUDE_CODE_SIMPLE=1`: 简化工具模式
+- `CLAUDE_CODE_SIMPLE=1`: 简化工具模式（1=启用）
+- `CLAUDE_CODE_ATTRIBUTION_HEADER=0`: 禁用属性头
+- `API_TIMEOUT_MS=600000`: API 超时（10 分钟）
+- `BASH_DEFAULT_TIMEOUT_MS=600000`: Bash 命令超时
 - `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`: API 端点切换
 - `CLAUDE_CONFIG_DIR`: 覆盖配置目录（默认 `~/.doge`）
+
+API 配置通过 `bootstrap-entry.ts` 从 `.doge/api.json` 读取：
+- `CLAUDE_CODE_COMPATIBLE_API_PROVIDER`: 提供商类型（openai/anthropic）
+
+### 配置与登录
+
+- **项目级配置**: `./.doge/api.json` - 存储当前项目的 BaseURL、API Key、模型选择
+- **全局配置**: `~/.doge/` - 用户级配置和会话历史
+- **切换配置**: `/login` 命令支持交互式配置，或直接编辑 `api.json`
+- **数据隔离**: 默认使用 `~/.doge/` 而非 `~/.claude/`，避免与原版冲突
+
+### Windows 批处理脚本说明
+
+- `d.bat` - 主启动脚本，设置所有环境变量后启动
+- `install.bat` - 安装依赖 + 编译 exe + 复制到 `F:\bin`
+- `complie.bat` - 仅编译为 `doge.exe`
+- `commit.bat` - 快速提交到 GitHub
+
+### Git 同步（Fork 维护）
+
+- `git pull` - 拉取当前仓库更新
+- `git pull upstream main` - 同步上游 Fork 仓库（需先配置 `git remote add upstream <url>`）
 
 ## 注意事项
 
 - 此项目**不是**官方 Claude Code，而是深度修改的 Fork。
 - 大部分脚本假设 Windows 环境（`.bat` 文件），Bash 脚本（`*.sh`）主要用于检查逻辑和 Unix 兼容。
-- 测试仅发现 `src/commands/plugin/__tests__/` 下有单元测试，运行需显式指定路径。
+- 测试位于 `src/commands/plugin/__tests__/` 下，运行需显式指定路径。
 - 编译为 exe 时需要确保 Bun 已正确安装并能访问 Node.js 原生模块。
+- 首次运行时若遇到 "process.stdin 不支持原始模式" 错误，请确保在真实终端（如 Windows Terminal、CMD、PowerShell）中运行，而非某些受限的 IDE 内置终端。
