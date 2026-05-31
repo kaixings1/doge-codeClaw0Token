@@ -1,0 +1,8 @@
+{
+  "tools": {
+    "Read": { "tasks": ["code_review", "debug", "analysis"] },
+    "Write": { "tasks": ["code_generation", "refactor"] },
+    "Bash": { "tasks": ["build", "test", "deploy"] },
+    "Grep": { "tasks": ["", "analysis"] }
+  }
+}

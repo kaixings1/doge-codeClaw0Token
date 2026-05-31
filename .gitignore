@@ -1,0 +1,65 @@
+# Doge Code Configuration
+.doge/
+.claude/
+.qwen/
+.remember/
+src-zh/
+
+# Build Artifacts
+dist/
+build/
+*.exe
+*.bun-build/
+.bun-build/
+.*.bun-build
+
+# IDE & Editor
+.idea/
+.vscode/
+src/.vs/
+*.swp
+*.swo
+
+# Node.js
+node_modules/
+*.log
+*.tmp
+*.bak
+
+# Lock Files
+bun.lock
+package-lock.json
+
+# Python & Other Scripts (legacy)
+*.py
+*.bat
+
+# Temporary Files
+*.env
+debug.log
+debug.txt
+config.json
+eng.txt
+eng1.txt
+eng2.txt
+api.json
+usage_stats.json
+test-prompt-patterns.js
+auto-translate-from-bottom.cjs
+
+# Source Archives
+src.rar
+
+# OS Files
+.DS_Store
+latest/
+# =========================
+# Claude Code
+# =========================
+.claude/*
+!.claude/agents/
+!.claude/hooks/
+!.claude/commands/
+!.claude/settings.json
+.claude/settings.local.json
+CLAUDE.local.md
