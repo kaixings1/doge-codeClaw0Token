@@ -1130,7 +1130,7 @@ export function mapOpenAIUsageToAnthropic(usage?: {
   } as BetaUsage
 }
 
-// ================== 工具调用提取器（完整保留） ==================
+// ================== 工具调用提取器（完整修复版） ==================
 // 工具调用类型定义（与 OpenAI 兼容）
 export type ToolCall = {
   id: string
@@ -1739,19 +1739,23 @@ export class ToolCallExtractor {
         }
       }
     }
-    // 模式15: 行首命令模式（检测常见命令动词）
-    /*const commandPrefixPattern = /^\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+([^\n]*)/im;
+    // **关键修复：移除容易误判的行首命令模式** 
+    // 原 commandPrefixPattern 会导致自然语言中的命令动词被提前当作工具调用，从而切断完整命令行。
+    // 因此将其注释掉，让自然语言命令通过其他格式（如 XML、Tool: 或 JSON）处理。
+    // 如果未来需要支持，建议改为检测更完整的模式。
+    /*
+    const commandPrefixPattern = /^\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+([^\n]*)/im;
     const cmdMatch = commandPrefixPattern.exec(text);
     if (cmdMatch) {
       const command = cmdMatch[0].trim();
-      // 确保不匹配已经处理过的工具调用（避免重复）
       return {
         start: cmdMatch.index,
         end: cmdMatch.index + command.length,
         toolCall: this.makeToolCall("Bash", { command }),
       };
     }
-		*/
+    */
+
     // 模式2: <tool_call name="ToolName">...</tool_call> (最重要，匹配日志中的格式)
     const toolCallAttr = /<tool_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i.exec(text);
     if (toolCallAttr) {
@@ -1921,24 +1925,31 @@ export class ToolCallExtractor {
         }
         if (endIdx !== -1) {
           const jsonCandidate = jsonText.slice(0, endIdx);
-          try {
-            const args = JSON.parse(jsonCandidate);
-            logForDebugging(`[ToolCallExtractor] 成功解析 JSON: ${JSON.stringify(args).slice(0, 200)}`, { level: 'debug' });
-            let finalToolName = toolName;
-            const lowerName = toolName.toLowerCase();
-            const knownTools = ["bash","glob","read","grep","write","edit","listfiles","web_search","code_interpreter","web_extractor","str_replace_editor"];
-            if (!knownTools.includes(lowerName)) {
-              const inferred = this.inferToolNameFromArgs(args);
-              if (inferred) finalToolName = inferred;
-              logForDebugging(`[ToolCallExtractor] 推断工具名: ${toolName} -> ${finalToolName}`, { level: 'debug' });
+          // 增强完整性检查：JSON 之后必须是换行+下一个"Tool:"或者文本结束
+          const afterJson = jsonText.slice(endIdx);
+          const isComplete = afterJson.trim().length === 0 || /^\s*\n\s*Tool:/i.test(afterJson);
+          if (isComplete) {
+            try {
+              const args = JSON.parse(jsonCandidate);
+              logForDebugging(`[ToolCallExtractor] 成功解析 JSON: ${JSON.stringify(args).slice(0, 200)}`, { level: 'debug' });
+              let finalToolName = toolName;
+              const lowerName = toolName.toLowerCase();
+              const knownTools = ["bash","glob","read","grep","write","edit","listfiles","web_search","code_interpreter","web_extractor","str_replace_editor"];
+              if (!knownTools.includes(lowerName)) {
+                const inferred = this.inferToolNameFromArgs(args);
+                if (inferred) finalToolName = inferred;
+                logForDebugging(`[ToolCallExtractor] 推断工具名: ${toolName} -> ${finalToolName}`, { level: 'debug' });
+              }
+              return {
+                start: prefixMatch.index,
+                end: jsonStartIdx + firstBrace + endIdx,
+                toolCall: this.makeToolCall(finalToolName, args),
+              };
+            } catch (e) {
+              logForDebugging(`[ToolCallExtractor] JSON 解析失败: ${e.message}, 候选文本: ${jsonCandidate.slice(0, 200)}`, { level: 'debug' });
             }
-            return {
-              start: prefixMatch.index,
-              end: jsonStartIdx + firstBrace + endIdx,
-              toolCall: this.makeToolCall(finalToolName, args),
-            };
-          } catch (e) {
-            logForDebugging(`[ToolCallExtractor] JSON 解析失败: ${e.message}, 候选文本: ${jsonCandidate.slice(0, 200)}`, { level: 'debug' });
+          } else {
+            logForDebugging(`[ToolCallExtractor] JSON 不完整，等待更多数据`, { level: 'debug' });
           }
         } else {
           logForDebugging(`[ToolCallExtractor] 未找到完整的 JSON 对象，jsonText 前200字符: ${jsonText.slice(0, 200)}`, { level: 'debug' });
@@ -2315,320 +2326,65 @@ export class ToolCallExtractor {
 		}
     return null;
   }
-	private extractLegacy(delta: string): ExtractResult {
+
+  // ========== 主入口 extract：保留原有逻辑并增加安全截断 ==========
+  public extract(delta: string): ExtractResult {
     this.buffer += delta;
     const newToolCalls: ToolCall[] = [];
+
+    // 循环提取已知的完整工具调用
     while (true) {
       const match = this.findToolCall();
       if (!match) break;
       const addedCalls = this.addOrMergeToolCall(match.toolCall);
       newToolCalls.push(...addedCalls);
-      const key = this.getToolCallKey(match.toolCall);
-      if (!this.seenToolKeys.has(key)) {
-        this.seenToolKeys.add(key);
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
       this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
       if (this.emittedTextLen > match.start) {
         this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
       }
     }
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: newToolCalls, remaining: this.buffer };
-  }
 
-  // ========== 哨兵模式专用方法 ==========
-  private tryExtractXmlToolCall(): { name: string; argsJson: string; endIndex: number } | null {
-    const buf = this.sentinelBuffer;
-    const openIdx = buf.indexOf(this.TOOL_TAG_OPEN);
-    if (openIdx === -1) return null;
-    const closeIdx = buf.indexOf(this.TOOL_TAG_CLOSE, openIdx + this.TOOL_TAG_OPEN.length);
-    if (closeIdx === -1) return null;
-    const inner = buf.substring(openIdx + this.TOOL_TAG_OPEN.length, closeIdx);
-    const nameMatch = /<name>([\s\S]*?)<\/name>/i.exec(inner);
-    const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
-    if (!nameMatch || !argsMatch) return null;
-    const name = nameMatch[1].trim();
-    let argsJson = argsMatch[1].trim();
-    const jsonMatch = argsJson.match(/\{[\s\S]*\}/);
-    if (jsonMatch) argsJson = jsonMatch[0];
-    try { JSON.parse(argsJson); } catch { return null; }
-    const endIndex = closeIdx + this.TOOL_TAG_CLOSE.length;
-    logForDebugging(`[哨兵] 匹配到完整工具: name=${name}, argsJson=${argsJson.slice(0, 100)}`, { level: 'debug' });
-    return { name, argsJson, endIndex };
-  }
-
-  private isPossiblePrefix(): boolean {
-    const buf = this.sentinelBuffer;
-    if (buf.length === 0) return true;
-    if (buf[0] !== '<') return false;
-    const tag = this.TOOL_TAG_OPEN;
-    const maxLen = Math.min(buf.length, tag.length);
-    for (let i = 0; i < maxLen; i++) {
-      if (buf[i] !== tag[i]) return false;
+    // 查找可能的不完整工具调用前缀，这些前缀之前的内容可以安全输出
+    let safeEnd = this.buffer.length;
+    const searchFrom = this.emittedTextLen;
+    // 只保留真正需要延迟的关键词（避免误判，如普通文本中的 "<" 可能属于 HTML）
+    const suspiciousPrefixes = [
+      '<tool_calling',
+      '<tool_call',
+      'Tool:',
+      'Action:',
+    ];
+    for (const prefix of suspiciousPrefixes) {
+      const idx = this.buffer.indexOf(prefix, searchFrom);
+      if (idx !== -1 && idx < safeEnd) {
+        safeEnd = idx;
+      }
     }
-    if (buf.includes(this.TOOL_TAG_OPEN)) return true;
-    return true;
+
+    // 对于 XML 风格，还要检查 <name> 等内部标签，进一步截断
+    let extraSafeEnd = safeEnd;
+    const xmlOpen = this.buffer.indexOf('<', searchFrom);
+    if (xmlOpen !== -1 && xmlOpen < extraSafeEnd) {
+      extraSafeEnd = xmlOpen;
+    }
+    safeEnd = Math.min(safeEnd, extraSafeEnd);
+
+    const newText = this.buffer.slice(this.emittedTextLen, safeEnd);
+    this.emittedTextLen = safeEnd;
+
+    return {
+      text: newText,
+      toolCalls: newToolCalls,
+      remaining: this.buffer.slice(safeEnd),
+    };
   }
-  // ========== 主入口 extract：优先哨兵模式，否则使用原有逻辑 ==========
-	extract(delta: string): ExtractResult {
-		this.buffer += delta;
-		const newToolCalls: ToolCall[] = [];
 
-		while (true) {
-				const match = this.findToolCall();
-				if (!match) break;
-				const addedCalls = this.addOrMergeToolCall(match.toolCall);
-				newToolCalls.push(...addedCalls);
-				this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-				if (this.emittedTextLen > match.start) {
-						this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-				}
-		}
-
-		// ===== 修改点：从 emittedTextLen 之后找最早的前缀位置 =====
-		let safeEnd = this.buffer.length;
-		const searchFrom = this.emittedTextLen;
-		const knownPrefixes = [
-				'<tool_calling',
-				'<tool_call',
-				'Tool:',
-				'Action:',
-				'[调用',
-				'```',
-		];
-		for (const prefix of knownPrefixes) {
-				const idx = this.buffer.indexOf(prefix, searchFrom);
-				if (idx !== -1 && idx < safeEnd) {
-						safeEnd = idx;          // 截断到该前缀之前
-				}
-		}
-
-		const newText = this.buffer.slice(this.emittedTextLen, safeEnd);
-		this.emittedTextLen = safeEnd;
-
-		return {
-				text: newText,
-				toolCalls: newToolCalls,
-				remaining: this.buffer.slice(safeEnd),   // 保留潜在前缀，等下一次 extract
-		};
-	}
   /**
-   * flush 方法：强制结束哨兵模式
+   * flush 方法：强制结束，提取剩余内容
    */
-	public flush(): ExtractResult {
-			// 最后一次尝试提取
-			const finalResult = this.extract('');
-
-			// 获取尚未输出的残留内容
-			let remainingText = this.buffer.slice(this.emittedTextLen);
-
-			// ===== 修改点：丢弃不完整的工具调用前缀 =====
-			const prefixIdx = remainingText.search(
-					/<tool_calling|<tool_call|Tool:|Action:|\[调用|```/
-			);
-			if (prefixIdx !== -1) {
-					// 只保留前缀之前的安全文本
-					remainingText = remainingText.substring(0, prefixIdx);
-			}
-
-			this.buffer = '';
-			this.emittedTextLen = 0;
-
-			// 合并所有未产出的工具调用
-			const allToolCalls = [...finalResult.toolCalls];
-			for (const [key, tc] of this.pendingToolCalls) {
-					if (!this.emittedToolKeys.has(key)) {
-							allToolCalls.push(tc);
-							this.emittedToolKeys.add(key);
-					}
-			}
-
-			this.reset();
-			return {
-					text: finalResult.text + remainingText,
-					toolCalls: allToolCalls,
-					remaining: '',
-			};
-	}
-/*
-  extract1(delta: string): ExtractResult {
-    this.buffer += delta;
-    const found: ToolCall[] = [];
-    while (true) {
-      const match = this.findToolCall();
-      if (!match) break;
-      const key = `${match.toolCall.function.name}:${match.toolCall.function.arguments}`;
-      if (!this.seenToolKeys.has(key)) {
-        this.seenToolKeys.add(key);
-        found.push(match.toolCall);
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
-      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-      if (this.emittedTextLen > match.start) {
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-      }
-    }
-    // 关键修改：移除此处的回退全文提取逻辑，只返回本次可输出的纯文本
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: found, remaining: tflushhis.buffer };
-  }
-	
-  // 修改 extract 方法，使用合并逻辑
-  extract(delta: string): ExtractResult {
-    this.buffer += delta;
-    const newToolCalls: ToolCall[] = [];
-    
-    while (true) {
-      const match = this.findToolCall();
-      if (!match) break;
-      
-      // 使用合并逻辑替代直接去重
-      const addedCalls = this.addOrMergeToolCall(match.toolCall);
-      newToolCalls.push(...addedCalls);
-      
-      // 记录已处理的工具调用（用于跨多次 extract 调用的去重）
-      const key = this.getToolCallKey(match.toolCall);
-      if (!this.seenToolKeys.has(key)) {
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-        this.seenToolKeys.add(key);
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
-      
-      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-      if (this.emittedTextLen > match.start) {
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-      }
-    }
-    
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: newToolCalls, remaining: this.buffer };
-  }*/
-	  /**
-   * 核心提取方法：使用哨兵模式处理流式输入
-   */
-  /*
-	extract(delta: string): ExtractResult {
-    // 如果处于哨兵模式，继续累积
-    if (this.sentinelActive) {
-      this.sentinelBuffer += delta;
-      const complete = this.tryExtractCompleteToolCall();
-      if (complete) {
-        // 成功提取工具调用，退出哨兵模式
-        this.sentinelActive = false;
-        const { name, argsJson, endIndex } = complete;
-        const remaining = this.sentinelBuffer.slice(endIndex);
-        this.sentinelBuffer = "";
-
-        // 构造工具调用
-        let argsObj: any;
-        try { argsObj = JSON.parse(argsJson); } catch { argsObj = {}; }
-        const toolCall = this.makeToolCall(name, argsObj);
-        // 通过合并逻辑处理重复/合并
-        const addedCalls = this.addOrMergeToolCall(toolCall);
-        // 如果有剩余内容，递归处理（可能包含多个工具调用或普通文本）
-        let extraResult: ExtractResult = { text: "", toolCalls: [], remaining: "" };
-        if (remaining) {
-          extraResult = this.extract(remaining);
-        }
-        return {
-          text: extraResult.text,
-          toolCalls: [...addedCalls, ...extraResult.toolCalls],
-          remaining: extraResult.remaining
-        };
-      } else if (!this.isPossiblePrefix()) {
-        // 不可能匹配，退出哨兵模式，将已累积的全部作为普通文本输出
-        this.sentinelActive = false;
-        const text = this.sentinelBuffer;
-        this.sentinelBuffer = "";
-        return { text, toolCalls: [], remaining: "" };
-      } else {
-        // 还在等待更多数据，暂不输出任何内容
-        return { text: "", toolCalls: [], remaining: "" };
-      }
-    } else {
-      // 正常模式：扫描 delta 中的 '<' 字符
-      let resultText = "";
-      let resultToolCalls: ToolCall[] = [];
-      let remainingDelta = delta;
-
-      while (remainingDelta.length > 0) {
-        const ltIndex = remainingDelta.indexOf('<');
-        if (ltIndex === -1) {
-          // 没有 '<'，全部为普通文本
-          resultText += remainingDelta;
-          break;
-        } else {
-          // 输出 '<' 之前的文本
-          if (ltIndex > 0) {
-            resultText += remainingDelta.slice(0, ltIndex);
-          }
-          // 从 '<' 开始进入哨兵模式
-          this.sentinelActive = true;
-          this.sentinelBuffer = remainingDelta.slice(ltIndex);
-          // 递归调用 extract 处理哨兵模式（传入空字符串，因为当前哨兵缓冲区已设置）
-          const subResult = this.extract("");
-          resultText += subResult.text;
-          resultToolCalls.push(...subResult.toolCalls);
-          // 如果 subResult.remaining 非空，继续循环
-          remainingDelta = subResult.remaining;
-        }
-      }
-
-      // 更新原有的 emittedTextLen 和 buffer（为了兼容旧逻辑，可以忽略或同步）
-      this.emittedTextLen = this.buffer.length; // 可选，保留原有状态
-      return { text: resultText, toolCalls: resultToolCalls, remaining: "" };
-    }
-  }
-  // 辅助方法：生成字符串的简单哈希值（用于去重 key）
-  private hashCode(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const chr = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0; // 转为 32 位整数
-    }
-    return Math.abs(hash).toString(16);
-  }
-  /*flush(): ExtractResult {
-    // 尝试从当前 buffer 中再次匹配工具调用（此时所有 chunk 已到齐）
-    const toolCalls: ToolCall[] = [];
-    let remaining = this.buffer;
-    let modified = false;
-    while (true) {
-        // 临时将 buffer 替换为 remaining 进行匹配
-        const savedBuffer = this.buffer;
-        this.buffer = remaining;
-        const match = this.findToolCall();
-        this.buffer = savedBuffer;
-        if (!match) break;
-        toolCalls.push(match.toolCall);
-        remaining = remaining.slice(0, match.start) + remaining.slice(match.end);
-        modified = true;
-    }
-    if (modified) {
-        this.buffer = remaining;
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-    }
-    // 剩余的作为普通文本输出，不生成 extract_full_text
-    const finalText = this.buffer;
-    this.buffer = "";
-    this.emittedTextLen = 0;
-    return { text: finalText, toolCalls, remaining: "" };
-  }
-
-  // 修改 flush 方法，清空合并缓冲区
-  flush(): ExtractResult {
-    // 先处理当前 buffer 中的工具调用
-    const toolCalls: ToolCall[] = [];
+  public flush(): ExtractResult {
+    // 最后一次尝试提取所有可能的工具调用
+    const finalToolCalls: ToolCall[] = [];
     let remaining = this.buffer;
     let modified = false;
 
@@ -2638,9 +2394,8 @@ export class ToolCallExtractor {
       const match = this.findToolCall();
       this.buffer = savedBuffer;
       if (!match) break;
-
       const addedCalls = this.addOrMergeToolCall(match.toolCall);
-      toolCalls.push(...addedCalls);
+      finalToolCalls.push(...addedCalls);
       remaining = remaining.slice(0, match.start) + remaining.slice(match.end);
       modified = true;
     }
@@ -2650,18 +2405,8 @@ export class ToolCallExtractor {
       this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
     }
 
-    // 只产出尚未产出过的工具调用（正常情况下都应该已经产出过，因为 extract() 中已产出）
-    // 但如果 buffer 中有工具调用从未被 extract() 完整识别，这里会作为兜底产出
-    const finalToolCalls: ToolCall[] = [];
-    for (const [key, tc] of this.pendingToolCalls) {
-      if (!this.emittedToolKeys.has(key)) {
-        finalToolCalls.push(tc);
-        this.emittedToolKeys.add(key);
-        logForDebugging(`[ToolCallExtractor] flush 中兜底产出工具调用: ${key}`, { level: 'debug' });
-      }
-    }
+    // 所有未能匹配的内容作为普通文本输出（不再尝试提取工具调用）
     const finalText = this.buffer;
-
     // 清空所有状态
     this.buffer = "";
     this.emittedTextLen = 0;
@@ -2671,36 +2416,7 @@ export class ToolCallExtractor {
     this.emittedToolKeys.clear();
 
     return { text: finalText, toolCalls: finalToolCalls, remaining: "" };
-  }*/
-
-
-  /**
-   * flush 方法：强制结束哨兵模式，将剩余内容作为普通文本输出
-   
-  flush(): ExtractResult {
-    if (this.sentinelActive) {
-      // 强制退出哨兵模式，剩余内容全部作为普通文本
-      const text = this.sentinelBuffer;
-      this.sentinelActive = false;
-      this.sentinelBuffer = "";
-      // 同时清空原有 buffer 相关状态（避免冲突）
-      this.buffer = "";
-      this.emittedTextLen = 0;
-      return { text, toolCalls: [], remaining: "" };
-    }
-    // 原有的 flush 逻辑可以保留，但为了简化，直接调用新逻辑
-    // 注意：原有 flush 中处理了 pendingToolCalls，这里需要合并处理
-    const finalToolCalls: ToolCall[] = [];
-    for (const [key, tc] of this.pendingToolCalls) {
-      if (!this.emittedToolKeys.has(key)) {
-        finalToolCalls.push(tc);
-        this.emittedToolKeys.add(key);
-      }
-    }
-    const finalText = this.buffer;
-    this.reset();
-    return { text: finalText, toolCalls: finalToolCalls, remaining: "" };
-  }*/
+  }
 
   public reset(): void {
     this.inSentinel = false;

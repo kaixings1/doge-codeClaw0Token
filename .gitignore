@@ -4,6 +4,7 @@
 .qwen/
 .remember/
 src-zh/
+.claude--/
 
 # Build Artifacts
 dist/

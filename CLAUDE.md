@@ -32,6 +32,7 @@
 
 - `bun test` - 运行所有测试
 - `bun test <file>` - 运行单个测试文件（如 `bun test src/commands/plugin/__tests__/parseArgs.test.ts`）
+- `bun test --coverage` - 运行测试并生成覆盖率报告
 
 ### 汉化工作流
 
@@ -39,7 +40,7 @@
 - `_replacements.json` - 批量文本替换配置
 - `Temp/english_comment_files*.txt` - 待汉化文件位置记录
 
-项目持续进行汉化，检查脚本位于根目录:
+项目持续进行汉化，检查脚本位于根目录。
 
 
 ## 高层代码架构
@@ -132,3 +133,55 @@ API 配置通过 `bootstrap-entry.ts` 从 `.doge/api.json` 读取：
 - 测试位于 `src/commands/plugin/__tests__/` 下，运行需显式指定路径。
 - 编译为 exe 时需要确保 Bun 已正确安装并能访问 Node.js 原生模块。
 - 首次运行时若遇到 "process.stdin 不支持原始模式" 错误，请确保在真实终端（如 Windows Terminal、CMD、PowerShell）中运行，而非某些受限的 IDE 内置终端。
+
+## 故障排除
+
+- **"process.stdin 不支持原始模式"**：在真实终端（Windows Terminal、CMD、PowerShell）中运行，避免使用受限的 IDE 内置终端
+- **API 连接失败**：检查 `.doge/api.json` 中的 BaseURL 和 API Key 是否正确，确保网络可访问
+- **编译失败**：确认 Bun 版本 >=1.3.5，运行 `bun --version` 检查
+- **会话历史丢失**：检查 `~/.doge/sessions/` 目录是否存在且权限正确
+
+## 调试
+
+- `bun run --inspect ./src/bootstrap-entry.ts` - 启用 Node.js 调试器
+- 设置环境变量 `LOG_LEVEL=debug` 启用详细日志
+- `bun run --watch ./src/bootstrap-entry.ts` - 热重载模式开发
+
+## 数据目录结构
+
+- `.doge/api.json` - API 配置（BaseURL、API Key、模型）
+- `.doge/sessions/` - 会话历史存储
+- `.doge/plugins/` - 插件配置
+- `~/.doge/` - 用户级全局配置（当项目无 `.doge/` 时使用）
+
+## 添加汉化文本
+
+1. 在 `_replacements.json` 中添加正则匹配规则
+2. 运行 `./check_untranslated.sh` 扫描遗漏
+3. 检查 `Temp/english_comment_files*.txt` 确认覆盖
+
+## 故障排除
+
+- **"process.stdin 不支持原始模式"**：在真实终端（Windows Terminal、CMD、PowerShell）中运行，避免使用受限的 IDE 内置终端
+- **API 连接失败**：检查 `.doge/api.json` 中的 BaseURL 和 API Key 是否正确，确保网络可访问
+- **编译失败**：确认 Bun 版本 >=1.3.5，运行 `bun --version` 检查
+- **会话历史丢失**：检查 `~/.doge/sessions/` 目录是否存在且权限正确
+
+## 调试
+
+- `bun run --inspect ./src/bootstrap-entry.ts` - 启用 Node.js 调试器
+- 设置环境变量 `LOG_LEVEL=debug` 启用详细日志
+- `bun run --watch ./src/bootstrap-entry.ts` - 热重载模式开发
+
+## 数据目录结构
+
+- `.doge/api.json` - API 配置（BaseURL、API Key、模型）
+- `.doge/sessions/` - 会话历史存储
+- `.doge/plugins/` - 插件配置
+- `~/.doge/` - 用户级全局配置（当项目无 `.doge/` 时使用）
+
+## 添加汉化文本
+
+1. 在 `_replacements.json` 中添加正则匹配规则
+2. 运行 `./check_untranslated.sh` 扫描遗漏
+3. 检查 `Temp/english_comment_files*.txt` 确认覆盖

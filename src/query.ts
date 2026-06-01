@@ -104,7 +104,7 @@ import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import { handleEmptyContentResponse } from './query/emptyContentHandler.js'
-import { playTaskCompleteSound } from './utils/soundNotification.js'
+import { playTaskCompleteSound, isAutoContinueEnabled } from './utils/soundNotification.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'bun:bundle'
 import {
@@ -1280,6 +1280,25 @@ async function* queryLoop(
             queryDepth: queryTracking.depth,
           })
         }
+      }
+
+      // 自动继续模式：任务完成时注入继续消息，防止对话意外中断
+      if (isAutoContinueEnabled()) {
+        logForDebugging('[AutoContinue] 任务完成，自动注入继续消息')
+        state = createNextState(state, {
+          messages: [
+            ...messagesForQuery,
+            ...assistantMessages,
+            createUserMessage({
+              content: '请继续完成你的回答，不要中途停止。如果还有未完成的内容，请继续输出。',
+              isMeta: true,
+            }),
+          ],
+          turnCount: turnCount + 1,
+          transition: { reason: 'auto_continue_on_complete' },
+        })
+        playTaskCompleteSound()
+        continue
       }
 
       playTaskCompleteSound()

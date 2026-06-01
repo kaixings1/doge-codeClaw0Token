@@ -40,7 +40,35 @@ type OpenAIChatMessage = {
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
 }
+// 添加在文件开头
+function isWSL(): boolean {
+		try {
+				const version = require('fs').readFileSync('/proc/version', 'utf8');
+				return version.toLowerCase().includes('microsoft');
+		} catch {
+				return false;
+		}
+}
 
+function mapCommandForPlatform(cmd: string): string {
+		if (!isWSL() && process.platform !== 'linux') return cmd;
+
+		const mappings: Record<string, string> = {
+				'move': 'mv',
+				'copy': 'cp',
+				'del': 'rm',
+				'rename': 'mv',
+				'type': 'cat',
+				'dir': 'ls -la'
+		};
+
+		for (const [winCmd, linuxCmd] of Object.entries(mappings)) {
+				if (cmd.trim().startsWith(winCmd)) {
+						return cmd.replace(winCmd, linuxCmd);
+				}
+		}
+		return cmd;
+}
 // 转换后的 OpenAI 请求体
 export type OpenAIChatRequest = {
   model: string
@@ -1712,7 +1740,7 @@ export class ToolCallExtractor {
       }
     }
     // 模式15: 行首命令模式（检测常见命令动词）
-    const commandPrefixPattern = /^\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+([^\n]*)/im;
+    /*const commandPrefixPattern = /^\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+([^\n]*)/im;
     const cmdMatch = commandPrefixPattern.exec(text);
     if (cmdMatch) {
       const command = cmdMatch[0].trim();
@@ -1723,6 +1751,7 @@ export class ToolCallExtractor {
         toolCall: this.makeToolCall("Bash", { command }),
       };
     }
+		*/
     // 模式2: <tool_call name="ToolName">...</tool_call> (最重要，匹配日志中的格式)
     const toolCallAttr = /<tool_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i.exec(text);
     if (toolCallAttr) {
@@ -2345,207 +2374,85 @@ export class ToolCallExtractor {
     return true;
   }
   // ========== 主入口 extract：优先哨兵模式，否则使用原有逻辑 ==========
-	/**
-	 * 核心提取方法：流式增量处理，使用 findToolCall 匹配多种工具调用格式
-	 */
 	extract(delta: string): ExtractResult {
-		// 1. 将新文本追加到 buffer
 		this.buffer += delta;
-
 		const newToolCalls: ToolCall[] = [];
 
-		// 2. 循环提取 buffer 中的工具调用（可能有多段）
 		while (true) {
-			const match = this.findToolCall();
-			if (!match) break;  // 当前 buffer 没有完整工具调用
-
-			// 工具调用前面的内容都是普通文本
-			const beforeText = this.buffer.slice(this.emittedTextLen, match.start);
-			if (beforeText.length > 0) {
-				// 这里不返回文本，而是累积到待返回的 text 中
-				// 注意：我们会在循环结束后统一计算 newText
-			}
-
-			// 通过合并逻辑处理工具调用
-			const addedCalls = this.addOrMergeToolCall(match.toolCall);
-			newToolCalls.push(...addedCalls);
-
-			// 从 buffer 中移除这段工具调用（保留剩余部分）
-			this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-			// 调整已输出文本指针
-			if (this.emittedTextLen > match.start) {
-				this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-			}
+				const match = this.findToolCall();
+				if (!match) break;
+				const addedCalls = this.addOrMergeToolCall(match.toolCall);
+				newToolCalls.push(...addedCalls);
+				this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
+				if (this.emittedTextLen > match.start) {
+						this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
+				}
 		}
 
-		// 3. 计算本次可以安全输出的纯文本
-		// 只输出 emittedTextLen 之后、buffer 之前的部分，因为后面可能包含未闭合的工具调用前缀
-		// 但在使用 findToolCall 的情况下，buffer 中未匹配的部分可能包含不完整工具调用，
-		// 我们需要保留这些片段，只输出已经确定不会成为工具调用开头的内容。
-		// 安全策略：输出从上次位置到 buffer 开头的所有文本，但如果 buffer 以可能的前缀开头，
-		// 则只输出到前缀之前的部分（避免截断潜在工具调用）。
+		// ===== 修改点：从 emittedTextLen 之后找最早的前缀位置 =====
 		let safeEnd = this.buffer.length;
-		const potentialPrefixes = [
-			/^\s*\[调用\s+/,   // 中文格式
-			/^\s*\{\s*"/,       // JSON 格式
-			/^\s*<tool_call/,   // XML 格式
-			/^\s*```/,          // 代码块
-			/^\s*Tool:\s*/i,    // 英文 Tool: 格式
-			/^\s*Action:/i,     // Action 格式
+		const searchFrom = this.emittedTextLen;
+		const knownPrefixes = [
+				'<tool_calling',
+				'<tool_call',
+				'Tool:',
+				'Action:',
+				'[调用',
+				'```',
 		];
-		for (const prefix of potentialPrefixes) {
-			if (prefix.test(this.buffer)) {
-				// 找到实际的开头位置（跳过空白）
-				const nonSpace = this.buffer.search(/\S/);
-				if (nonSpace !== -1 && nonSpace < safeEnd) {
-					safeEnd = nonSpace;
+		for (const prefix of knownPrefixes) {
+				const idx = this.buffer.indexOf(prefix, searchFrom);
+				if (idx !== -1 && idx < safeEnd) {
+						safeEnd = idx;          // 截断到该前缀之前
 				}
-				break;
-			}
 		}
 
 		const newText = this.buffer.slice(this.emittedTextLen, safeEnd);
 		this.emittedTextLen = safeEnd;
 
 		return {
-			text: newText,
-			toolCalls: newToolCalls,
-			remaining: this.buffer.slice(safeEnd), // 剩余未处理部分（潜在工具调用前缀）
+				text: newText,
+				toolCalls: newToolCalls,
+				remaining: this.buffer.slice(safeEnd),   // 保留潜在前缀，等下一次 extract
 		};
 	}
-
-	  /**
-   * 新的 extract 方法，基于哨兵模式
-   */
-  extract2(delta: string): ExtractResult {
-    // 如果处于哨兵模式，继续累积
-    if (this.sentinelActive) {
-      this.sentinelBuffer += delta;
-      let complete: { name: string; argsJson: string; endIndex: number } | null = null;
-      if (this.sentinelType === "tool") {
-        complete = this.tryExtractToolFormat();
-      } else if (this.sentinelType === "xml") {
-        complete = this.tryExtractXmlFormat();
-      } else if (this.sentinelType === "cn") {
-        complete = this.tryExtractCnFormat();
-      } else {
-        // 尝试所有格式
-        complete = this.tryExtractToolFormat() || this.tryExtractXmlFormat() || this.tryExtractCnFormat();
-      }
-      if (complete) {
-        // 成功提取，退出哨兵模式
-        this.sentinelActive = false;
-        const { name, argsJson, endIndex } = complete;
-        const remaining = this.sentinelBuffer.slice(endIndex);
-        this.sentinelBuffer = "";
-        // 构造工具调用
-        let argsObj: any;
-        try { argsObj = JSON.parse(argsJson); } catch { argsObj = {}; }
-        const toolCall = this.makeToolCall(name, argsObj);
-        const addedCalls = this.addOrMergeToolCall(toolCall);
-        // 递归处理剩余部分
-        let extraResult: ExtractResult = { text: "", toolCalls: [], remaining: "" };
-        if (remaining) {
-          // 临时禁用哨兵模式，重新调用 extract 处理剩余内容
-          extraResult = this.extract(remaining);
-        }
-        return {
-          text: extraResult.text,
-          toolCalls: [...addedCalls, ...extraResult.toolCalls],
-          remaining: extraResult.remaining,
-        };
-      } else {
-        // 未完整，检查是否可能前缀（防止一直累积）
-        if (this.sentinelBuffer.length > 2000) {
-          // 超长仍无法匹配，回退为普通文本
-          const text = this.sentinelBuffer;
-          this.sentinelActive = false;
-          this.sentinelBuffer = "";
-          return { text, toolCalls: [], remaining: "" };
-        }
-        return { text: "", toolCalls: [], remaining: "" };
-      }
-    } else {
-      // 正常模式：扫描 delta，寻找可能的前缀
-      let resultText = "";
-      let resultToolCalls: ToolCall[] = [];
-      let remainingDelta = delta;
-
-      while (remainingDelta.length > 0) {
-        // 查找任意前缀的最早出现位置
-        const prefixes = [this.TOOL_PREFIX, this.XML_OPEN, this.CN_PREFIX, "<", "T", "调"];
-        let earliestIdx = -1;
-        let matchedPrefix = "";
-        for (const p of prefixes) {
-          const idx = remainingDelta.indexOf(p);
-          if (idx !== -1 && (earliestIdx === -1 || idx < earliestIdx)) {
-            earliestIdx = idx;
-            matchedPrefix = p;
-          }
-        }
-        if (earliestIdx === -1) {
-          // 没有前缀，全部为普通文本
-          resultText += remainingDelta;
-          break;
-        } else {
-          // 输出前缀之前的普通文本
-          if (earliestIdx > 0) {
-            resultText += remainingDelta.slice(0, earliestIdx);
-          }
-          // 从 earliestIdx 开始进入哨兵模式
-          this.sentinelActive = true;
-          this.sentinelBuffer = remainingDelta.slice(earliestIdx);
-          // 确定哨兵类型
-          if (matchedPrefix === this.TOOL_PREFIX || matchedPrefix === "T") {
-            this.sentinelType = "tool";
-          } else if (matchedPrefix === this.XML_OPEN || matchedPrefix === "<") {
-            this.sentinelType = "xml";
-          } else if (matchedPrefix === this.CN_PREFIX || matchedPrefix === "调") {
-            this.sentinelType = "cn";
-          } else {
-            this.sentinelType = null;
-          }
-          // 递归调用 extract 处理哨兵模式（传入空字符串，让哨兵自己处理缓冲区）
-          const subResult = this.extract("");
-          resultText += subResult.text;
-          resultToolCalls.push(...subResult.toolCalls);
-          // 更新 remainingDelta 为 subResult.remaining（如果有）
-          remainingDelta = subResult.remaining;
-        }
-      }
-      // 更新原有 buffer 相关状态（为兼容旧 flush，可选）
-      this.emittedTextLen = this.buffer.length;
-      return { text: resultText, toolCalls: resultToolCalls, remaining: "" };
-    }
-  }
-
   /**
    * flush 方法：强制结束哨兵模式
    */
 	public flush(): ExtractResult {
-		// 最后再尝试提取一次
-		const finalResult = this.extract('');
+			// 最后一次尝试提取
+			const finalResult = this.extract('');
 
-		// 把 buffer 中剩余的全部当作文本
-		const remainingText = this.buffer.slice(this.emittedTextLen);
-		this.buffer = '';
-		this.emittedTextLen = 0;
+			// 获取尚未输出的残留内容
+			let remainingText = this.buffer.slice(this.emittedTextLen);
 
-		// 合并之前未产出的工具调用
-		const allToolCalls = [...finalResult.toolCalls];
-		for (const [key, tc] of this.pendingToolCalls) {
-			if (!this.emittedToolKeys.has(key)) {
-				allToolCalls.push(tc);
-				this.emittedToolKeys.add(key);
+			// ===== 修改点：丢弃不完整的工具调用前缀 =====
+			const prefixIdx = remainingText.search(
+					/<tool_calling|<tool_call|Tool:|Action:|\[调用|```/
+			);
+			if (prefixIdx !== -1) {
+					// 只保留前缀之前的安全文本
+					remainingText = remainingText.substring(0, prefixIdx);
 			}
-		}
 
-		this.reset();
-		return {
-			text: finalResult.text + remainingText,
-			toolCalls: allToolCalls,
-			remaining: '',
-		};
+			this.buffer = '';
+			this.emittedTextLen = 0;
+
+			// 合并所有未产出的工具调用
+			const allToolCalls = [...finalResult.toolCalls];
+			for (const [key, tc] of this.pendingToolCalls) {
+					if (!this.emittedToolKeys.has(key)) {
+							allToolCalls.push(tc);
+							this.emittedToolKeys.add(key);
+					}
+			}
+
+			this.reset();
+			return {
+					text: finalResult.text + remainingText,
+					toolCalls: allToolCalls,
+					remaining: '',
+			};
 	}
 /*
   extract1(delta: string): ExtractResult {
