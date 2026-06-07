@@ -2,104 +2,272 @@
 
 此文件为 Claude Code (claude.ai/code) 在处理此代码库时提供指导。
 
-## 项目信息
+# 常用命令
 
-- **项目名称**: Doge Code (基于 Claude Code 的汉化/魔改版)
-- **入口语言**: TypeScript
-- **运行时**: Bun (>=1.3.5) + Node.js (>=24.0.0)
-- **包管理器**: npm / bun
-- **主入口**: `./src/bootstrap-entry.ts`
-- **CLI 命令名**: `doge` (全局) 或 `d.bat` (项目内)
+## 开发与构建
 
-## 常用命令
+```bash
+# 安装依赖
+bun install
 
-### 启动与运行
+# 启动开发服务器（TUI/CLI）
+bun run dev
 
-- `bun run dev` - 启动 TUI 开发模式（热重载）
-- `bun run start` - 启动应用
-- `bun run version` - 输出版本信息
-- `d.bat` - Windows 快速启动（预设环境变量）
+# 启动生产版本
+bun run start
 
-### 安装与构建
+# 输出版本信息
+bun run version
 
-- `bun install` - 安装依赖
-- `bun link` - 全局注册为 `doge` 命令
-- `install.bat` - Windows 一键安装
-- `complie.bat` - 编译为 `doge.exe` 独立可执行文件
+# 编译为可执行程序
+complie.bat
 
-### 测试
+# 使用预编译的 exe 启动
+d.bat
 
-- `bun test` - 运行所有测试
-- `bun test <file>` - 运行单个测试文件
-- `bun test --coverage` - 运行测试并生成覆盖率报告
+# 安装为全局命令
+bun link
 
-## 代码架构
-
-### 启动流程
-
-```
-bootstrap-entry.ts
-  → 加载 .env + .doge/api.json
-  → 设置环境变量
-  → entrypoints/cli.tsx
-  → main.tsx (TUI 主循环)
-  → commands.ts (命令分发)
-  → assistant/gate.ts + tools/ + services/api/
+# 使用全局命令
+# doge
 ```
 
-### 核心模块
+## 测试
 
-| 模块 | 职责 |
-|------|------|
-| `bootstrap-entry.ts` | 启动逻辑、环境配置、模式初始化 |
-| `entrypoints/` | CLI 入口解析 |
-| `cli/` | 输出打印、NDJSON 序列化、传输层 |
-| `commands/` | 所有 `/` 命令实现（100+ 个） |
-| `tools/` | 工具系统（BashTool, ReadTool, EditTool 等） |
-| `assistant/` | 会话网关，管理助手生命周期 |
-| `components/` | Ink/React UI 组件 |
-| `services/api/` | API 通信层 |
+```bash
+# 运行测试（如存在测试文件）
+bun test
 
-### 重要架构特点
+# 运行单个测试文件
+bun test test_truncate.ts
+bun test test_truncate_unit.js
 
-1. **API 转接层**: `services/api/openaiCompat.ts` 将 Anthropic Messages API 转换为 OpenAI Chat Completions 格式
-2. **跨模型切换**: `/login` 支持配置不同厂商的 BaseURL、API Key、模型
-3. **命令加载**: `commands.ts` 统一注册，支持动态技能、插件、MCP 注入
-4. **远程安全**: `REMOTE_SAFE_COMMANDS` / `BRIDGE_SAFE_COMMANDS` 标识远程可执行命令
+# 运行集成测试
+bun test test_truncate_integration.js
+```
 
-## 配置系统
+## 代码检查
 
-- **项目级**: `./.doge/api.json` - API 配置
-- **全局**: `~/.doge/` - 用户级配置
-- **环境变量**: `ANTHROPIC_BASE_URL`, `DOGE_API_KEY`, `CLAUDE_CONFIG_DIR` 等
+```bash
+# TypeScript 编译检查（如果 tsconfig.json 存在）
+bun tsc --noEmit
+
+# 格式化（如配置了 prettier）
+bun format
+
+# 运行 lint（如配置了 eslint）
+bun lint
+```
+
+## Git 工作流
+
+```bash
+# 检查状态
+git status
+
+# 查看差异
+git diff
+
+# 提交更改
+git commit -m "描述性提交消息"
+
+# 推送到远程
+git push
+
+# 拉取更新
+git pull
+
+# 创建并提交 PR
+git pull --rebase origin/main
+```
+
+# 项目架构概览
+
+Doge Code 是一个基于 Claude Code 的 Fork 和魔改版本，主要特点包括：
+
+- 支持自定义 Anthropic 兼容接口地址
+- 多入口的 OpenAI Chat Completions ↔ Anthropic Messages 转接能力
+- 自定义 API Key 和模型管理
+- 本地数据记录到 `./.doge` 路径体系
+- CLI/TUI 主体结构，无视登录流绑定
+
+## 核心文件结构
+
+```
+src/
+├── bootstrap/          # 引导入口和初始化逻辑
+├── bootstrap-entry.ts  # 应用启动入口
+├── cli/                # CLI 相关逻辑
+├── commands/           # 所有斜杠命令（/login, /clear, /model 等）
+│   └── <command-name>/  # 每个命令独立目录
+├── components/         # React/Ink UI 组件
+├── context/            # 上下文管理
+├── coordinator/        # 协调器逻辑
+├── core.ts             # 核心运行时
+├── cost-tracker.ts     # Token 成本跟踪
+├── dialogLaunchers.tsx # 对话框启动器
+├── entrypoints/        # 入口点（cli, tui 等）
+├── history.ts          # 会话历史记录管理
+├── hooks/              # React/Ink 钩子
+├── ink/                # Ink UI 渲染相关
+├── main.tsx            # 主应用渲染
+├── memdir/             # 内存目录管理
+├── migrations/         # 数据迁移逻辑
+├── plugins/            # 插件系统
+├── proactive/          # 主动功能（KAIROS 等）
+├── query.ts            # 查询引擎（核心查询逻辑）
+├── QueryEngine.ts      # 查询引擎实现
+├── setup.ts            # 应用设置
+├── state/              # 全局状态管理
+├── services/           # 外部服务（API, MCP, 数据库等）
+│   └── api/            # API 客户端封装
+├── skills/             # 技能加载和管理
+├── tools/              # 工具实现
+├── types/              # TypeScript 类型定义
+├── utils/              # 工具函数
+├── vendor/             # 第三方依赖
+└── vendor.shims/       # 垫片/兼容层
+```
+
+## 关键模块说明
+
+### 1. 命令系统（src/commands/）
+
+所有斜杠命令都位于 `src/commands/` 目录，每个命令有独立目录：
+
+- `/commands/add-dir/` - 添加目录
+- `/commands/clear/` - 清空上下文
+- `/commands/config/` - 配置管理
+- `/commands/login/` - 登录/切换 API
+- `/commands/model/` - 切换模型
+- `/commands/compact/` - 压缩会话
+- `/commands/context/` - 查看上下文用量
+- `/commands/rewind/` - 上下文回滚
+- `/commands/rename/` - 重命名会话
+- `/commands/plugins/` - 插件管理
+- `/commands/skills/` - 技能管理
+- `/commands/agents/` - 代理管理
+- `/commands/teleport/` - 传输会话
+
+查看 `src/commands.ts` 了解所有可用命令的完整列表。
+
+### 2. 查询引擎（src/query.ts, src/QueryEngine.ts）
+
+处理用户输入的解析和路由：
+
+- 识别 `/` 命令
+- 识别模型提示
+- 识别代码操作
+- 路由到相应工具
+
+### 3. 上下文管理（src/history.ts, src/state/）
+
+- 会话历史记录存储（sqlite/duckdb）
+- 上下文窗口大小控制
+- 自动截断/压缩逻辑
+
+### 4. 成本跟踪（src/cost-tracker.ts, src/costHook.ts）
+
+- 实时 Token 消耗监控
+- 成本计算
+- 预算警告
+
+### 5. 插件系统（src/plugins/）
+
+- 插件加载和发现
+- 内置插件管理
+- 插件技能注册
+
+### 6. 技能系统（src/skills/）
+
+- 技能定义和验证
+- 技能加载（从磁盘）
+- 技能索引构建
+
+### 7. 工具系统（src/tools/）
+
+- 工具定义和执行
+- 工具调用处理
+- 工具输出格式化
+
+## 配置说明
+
+### 环境变量（.env）
+
+```env
+# 上下文截断控制
+CLAUDE_TRUNCATE_WARN_THRESHOLD=25000
+CLAUDE_TRUNCATE_COMPACT_THRESHOLD=30000
+CLAUDE_TRUNCATE_ERROR_THRESHOLD=35000
+CLAUDE_TRUNCATE_MAX_HISTORY_MESSAGES=300
+CLAUDE_KEEP_LAST_MESSAGES=15
+
+# API 配置（可选）
+ANTHROPIC_BASE_URL=http://your-api.com
+DOGE_API_KEY=your-api-key
+
+# 日志级别
+LOG_LEVEL=info
+```
+
+### 配置文件（./.doge）
+
+- `api.json` - API 配置（baseURL, apiKey, 模型等）
+- `settings.json` - 用户设置
+
+## 开发工作流
+
+1. **首次安装**
+   ```bash
+   git clone <repo-url>
+   cd doge-code
+   bun install
+   bun link
+   bun run dev
+   ```
+
+2. **日常更新**
+   ```bash
+   git pull
+   bun install
+   bun link
+   bun run dev
+   ```
+
+3. **添加新命令**
+   - 在 `src/commands/` 创建新目录
+   - 实现命令逻辑
+   - 在 `src/commands.ts` 中导入并注册
+
+4. **调试**
+   - 启动 `bun run dev`
+   - 查看控制台日志
+   - 使用 `LOG_LEVEL=debug` 启用详细日志
 
 ## 注意事项
 
-- 此项目**不是**官方 Claude Code，而是深度修改的 Fork
-- 大部分脚本假设 Windows 环境
-- 首次运行时若遇到 "process.stdin 不支持原始模式"，请确保在真实终端中运行
+- 默认配置使用 `bun` 作为运行时，需要 Bun 1.3.5+
+- 支持 Node.js 24+
+- 部分功能依赖远程 API（Anthropic, OpenAI 等）
+- 本地数据存储在 `./.doge` 目录，避免与原版 Claude Code 配置混用
 
-## 调试
+## 快速命令参考
 
-- `bun run --inspect ./src/bootstrap-entry.ts` - 启用调试器
-- `LOG_LEVEL=debug` - 详细日志
-- `bun run --watch ./src/bootstrap-entry.ts` - 热重载
+| 命令 | 说明 |
+|------|------|
+| `/login` | 切换 API 端点和密钥 |
+| `/clear` | 清空上下文 |
+| `/model` | 切换模型 |
+| `/compact` | 压缩会话 |
+| `/config` | 查看配置 |
+| `/plugins` | 插件管理 |
+| `/skills` | 技能管理 |
+| `/agents` | 代理管理 |
+| `/rewind` | 上下文回滚 |
+| `/cost` | 查看 Token 成本 |
+| `/help` | 显示帮助 |
+| `/exit` | 退出 |
 
-## 添加新命令
+# 授权
 
-1. 在 `src/commands/` 下创建新命令目录
-2. 创建 `index.js` 导出命令对象
-3. 在 `src/commands.ts` 中导入并添加到 `COMMANDS` 数组
-
-## 添加远程安全命令
-
-1. 在 `src/commands.ts` 中导入新命令
-2. 将命令对象添加到 `REMOTE_SAFE_COMMANDS` Set
-3. 确保命令类型为 `'local'` 或 `'prompt'`，不依赖本地资源
-
-## 数据目录
-
-- `.doge/api.json` - API 配置
-- `.doge/sessions/` - 会话历史
-- `.doge/plugins/` - 插件配置
-- `~/.doge/` - 用户级全局配置
+本仓库是 Claude Code 的 Fork，包含恢复期代码与后续魔改。不代表官方立场。
