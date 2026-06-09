@@ -2,6 +2,7 @@ import { c as _c } from "react/compiler-runtime";
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { Box } from '../../ink.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { getInitialSettings } from '../../utils/settings/settings.js';
 import { Clawd, type ClawdPose } from './Clawd.js';
 
@@ -49,8 +50,9 @@ const incrementFrame = (i: number) => i + 1;
 const CLAWD_HEIGHT = 7; // 与 Clawd 组件图形高度一致
 
 export function AnimatedClawd() {
+  const columns = useTerminalSize().columns;
   const $ = _c(8);
-  const { pose, bounceOffset, onClick } = useClawdAnimation();
+  const { pose, bounceOffset, onClick } = useClawdAnimation(columns);
 
   let t0;
   if ($[0] !== pose) {
@@ -87,11 +89,14 @@ export function AnimatedClawd() {
   return t2;
 }
 
-function useClawdAnimation() {
+function useClawdAnimation(columns: number) {
   const [reducedMotion] = useState(() => getInitialSettings().prefersReducedMotion ?? false);
   const [frameIndex, setFrameIndex] = useState(0); // 始终运行帧序列
   const sequenceRef = useRef<readonly Frame[]>(IDLE_LOOP);
   const clickLockRef = useRef(false);
+
+  // 计算跳动幅度：基于终端宽度，最大跳动 20% 的高度
+  const bounceOffset = Math.max(1, Math.min(20, columns / 5));
 
   const onClick = () => {
     if (reducedMotion || clickLockRef.current) return;
@@ -103,16 +108,50 @@ function useClawdAnimation() {
 
   useEffect(() => {
     if (reducedMotion) return;
-    if (frameIndex >= sequenceRef.current.length) {
-      // 动画结束，恢复 idle 循环
+
+    let intervalId: NodeJS.Timeout | null = null;
+
+    // 动画循环逻辑：仅依赖于 setState 的函数更新，不直接读取 frameIndex
+    const animate = () => {
+      setFrameIndex(prevIndex => {
+        const nextIndex = prevIndex + 1;
+        if (nextIndex >= sequenceRef.current.length) {
+            // 动画结束，恢复 idle 循环
+            sequenceRef.current = IDLE_LOOP;
+            clickLockRef.current = false;
+            clearInterval(intervalId!);
+            return 0;
+        }
+        return nextIndex;
+      });
+    };
+
+    // 启动定时器，初始时需要确保 frameIndex 是一个有效的状态值
+    // 初始启动时，如果 frameIndex 已经是 0 且动画未开始，我们需要设置一次定时器。
+    // 使用 setInterval 保证持续性，并依赖于 setFrameIndex 来更新状态。
+    if (frameIndex < sequenceRef.current.length && !clickLockRef.current) {
+        intervalId = setInterval(animate, FRAME_MS);
+    }
+
+    // 清理函数：在组件卸载或依赖项变化时清除定时器
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [reducedMotion]); // 仅依赖 reducedMotion，不依赖 frameIndex壮
+
+
+
+  // 当 reducedMotion 变化时，重置动画状态
+  useEffect(() => {
+    if (reducedMotion) {
+      // 如果用户启用了减少运动模式，立即停止动画
       sequenceRef.current = IDLE_LOOP;
       setFrameIndex(0);
       clickLockRef.current = false;
-      return;
     }
-    const timer = setTimeout(() => setFrameIndex(incrementFrame), FRAME_MS);
-    return () => clearTimeout(timer);
-  }, [frameIndex, reducedMotion]);
+  }, [reducedMotion]);
 
   const currentFrame = sequenceRef.current[frameIndex] ?? { pose: 'default', offset: 0 };
   return {
