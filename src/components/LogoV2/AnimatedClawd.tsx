@@ -54,6 +54,9 @@ export function AnimatedClawd() {
   const $ = _c(8);
   const { pose, bounceOffset, onClick } = useClawdAnimation(columns);
 
+  // Debug: 确认组件是否被Renderer
+  console.debug('[AnimatedClawd] Rendered, pose:', pose, 'bounceOffset:', bounceOffset);
+
   let t0;
   if ($[0] !== pose) {
     t0 = <Clawd pose={pose} />;
@@ -113,6 +116,9 @@ useEffect(() => {
     // 确保每次 timer 都 capture 最新的状态值
     const runFrame = () => {
       if (reducedMotion) return;
+
+      // Debug: 确认动画循环是否真正运行
+      console.debug('[AnimatedClawd] Animation frame running, reducedMotion:', reducedMotion);
 
       setFrameIndex(prevIndex => {
         const nextIndex = prevIndex + 1;
