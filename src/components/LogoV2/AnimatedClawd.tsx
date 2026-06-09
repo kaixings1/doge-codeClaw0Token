@@ -106,40 +106,37 @@ function useClawdAnimation(columns: number) {
     setFrameIndex(0);
   };
 
-  useEffect(() => {
+useEffect(() => {
     if (reducedMotion) return;
 
-    let intervalId: NodeJS.Timeout | null = null;
+    // 使用链式 setTimeout 实现动画循环，每次状态更新后设置**新的 timer**
+    // 确保每次 timer 都 capture 最新的状态值
+    const runFrame = () => {
+      if (reducedMotion) return;
 
-    // 动画循环逻辑：仅依赖于 setState 的函数更新，不直接读取 frameIndex
-    const animate = () => {
       setFrameIndex(prevIndex => {
         const nextIndex = prevIndex + 1;
         if (nextIndex >= sequenceRef.current.length) {
             // 动画结束，恢复 idle 循环
             sequenceRef.current = IDLE_LOOP;
             clickLockRef.current = false;
-            clearInterval(intervalId!);
-            return 0;
+            return 0; // 返回新索引，下 frame 从 0 开始
         }
         return nextIndex;
       });
-    };
 
-    // 启动定时器，初始时需要确保 frameIndex 是一个有效的状态值
-    // 初始启动时，如果 frameIndex 已经是 0 且动画未开始，我们需要设置一次定时器。
-    // 使用 setInterval 保证持续性，并依赖于 setFrameIndex 来更新状态。
-    if (frameIndex < sequenceRef.current.length && !clickLockRef.current) {
-        intervalId = setInterval(animate, FRAME_MS);
-    }
-
-    // 清理函数：在组件卸载或依赖项变化时清除定时器
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
+      // 每次状态更新后，设置**新的 timer**，创建新的闭包以 capture 最新状态
+      if (!reducedMotion) {
+        setTimeout(runFrame, FRAME_MS);
       }
     };
-  }, [reducedMotion]); // 仅依赖 reducedMotion，不依赖 frameIndex壮
+
+    // 初始 timer
+    const initialTimer = setTimeout(runFrame, FRAME_MS);
+
+    // 清理函数
+    return () => clearTimeout(initialTimer);
+  }, [reducedMotion]); // 仅依赖 reducedMotion
 
 
 
