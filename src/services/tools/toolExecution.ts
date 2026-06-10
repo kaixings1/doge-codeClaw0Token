@@ -611,8 +611,41 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
+  // 参数兼容性处理：将旧参数名映射到新参数名
+  // 解决模型返回错误参数名 (old_str/new_str) 而非正确的参数名 (old_string/new_string) 的问题
+  let processedInput = input
+  if (
+    tool.name === FILE_EDIT_TOOL_NAME &&
+    typeof input === 'object' &&
+    input !== null
+  ) {
+    const inputCopy = { ...input }
+    let hasLegacyParams = false
+
+    // 将 old_str 映射为 old_string
+    if ('old_str' in inputCopy) {
+      inputCopy.old_string = inputCopy.old_str
+      delete inputCopy.old_str
+      hasLegacyParams = true
+    }
+
+    // 将 new_str 映射为 new_string
+    if ('new_str' in inputCopy) {
+      inputCopy.new_string = inputCopy.new_str
+      delete inputCopy.new_str
+      hasLegacyParams = true
+    }
+
+    if (hasLegacyParams) {
+      processedInput = inputCopy as typeof input
+      logForDebugging(
+        `${tool.name} 工具检测到旧参数名，已自动转换：old_str→old_string, new_str→new_string`,
+      )
+    }
+  }
+
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  const parsedInput = tool.inputSchema.safeParse(processedInput)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 
