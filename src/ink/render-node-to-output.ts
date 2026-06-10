@@ -762,8 +762,15 @@ function renderNodeToOutput(
         // spacer) making scrollTop >= prevMaxScroll true by artifact, not
         // because the user was at bottom.
         const grew = scrollHeight >= prevScrollHeight
+        // 添加阈值判断：只有当用户真正接近底部时才认为是"在底部"
+        // 防止 logo 刷新等小内容变化导致滚动条被拉到底部
+        // 阈值设为 5 行：用户离底部超过 5 行时不认为是"在底部"
+        const SCROLL_THRESHOLD = 5
         const atBottom =
-          sticky || (grew && scrollTopBeforeFollow >= prevMaxScroll)
+          sticky ||
+          (grew &&
+            scrollTopBeforeFollow >= prevMaxScroll &&
+            scrollTopBeforeFollow >= prevMaxScroll - SCROLL_THRESHOLD)
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
