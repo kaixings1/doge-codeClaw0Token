@@ -791,18 +791,18 @@ async function checkPermissionsAndCallTool(
   // system (SedEditPermissionRequest) after user approval. If the model supplies
   // it, the schema's strictObject should already reject it, but we strip here
   // as a safeguard against future regressions.
-  let processedInput = parsedInput.data
+  const strippedInput = parsedInput.data
   if (
     tool.name === BASH_TOOL_NAME &&
-    processedInput &&
-    typeof processedInput === 'object' &&
-    '_simulatedSedEdit' in processedInput
+    strippedInput &&
+    typeof strippedInput === 'object' &&
+    '_simulatedSedEdit' in strippedInput
   ) {
     const { _simulatedSedEdit: _, ...rest } =
-      processedInput as typeof processedInput & {
+      strippedInput as typeof strippedInput & {
         _simulatedSedEdit: unknown
       }
-    processedInput = rest as typeof processedInput
+    processedInput = rest as typeof strippedInput
   }
 
   // Backfill legacy/derived fields on a shallow clone so hooks/canUseTool see
