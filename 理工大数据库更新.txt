@@ -1,0 +1,36 @@
+
+SELECT motion_id, tar_rotate_z
+FROM t_mechanism_motion_info 
+WHERE motion_id = 'C06';
+
+
+
+
+
+UPDATE t_mechanism_motion_info SET cur_pos_y =      WHERE motion_id = 'C04';
+
+UPDATE t_mechanism_motion_info SET cur_rotate_y =      WHERE motion_id = 'C04';
+
+
+UPDATE t_mechanism_motion_info SET cur_pos_x =      WHERE motion_id = 'C05';
+
+UPDATE t_mechanism_motion_info SET cur_pos_z =      WHERE motion_id = 'C05';
+
+
+
+UPDATE t_mechanism_motion_info SET cur_rotate_z =     WHERE motion_id = 'C05';
+
+
+
+UPDATE t_workpiece_inspection SET fdd = '  
+
+
+UPDATE t_workpiece_inspection SET magnification  =  '
+
+
+
+
+
+
+
+

@@ -1,6 +1,16 @@
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-export type ClawdPose = 'default' | 'blink' | 'heart' | 'angry' | 'sleep' | 'arms-up' | 'look-left' | 'look-right';
+export type ClawdPose =
+  | 'default'
+  | 'blink'
+  | 'heart'
+  | 'angry'
+  | 'sleep'
+  | 'arms-up'
+  | 'look-left'
+  | 'look-right'
+  | 'waving'
+  | 'thinking';
 
 
 type Props = {
@@ -83,6 +93,26 @@ const GRAPHICS: Record<ClawdPose, string[]> = {
     "  ╭───────────╮  ",
     " ╱     ◕   ◕  ╲ ",
     "│      ω      │",
+    "│    ‿    ‿   │",
+    "│   ███████   │",
+    " ╲             ╱ ",
+    "  ╰───────────╯  ",
+  ],
+  waving: [
+    "    ▴▃▃▃▃▃▃▃▴     ",
+    "  ╭───────────╮  ",
+    " ╱  ◕    ◕    ╲ ",
+    "│      ω      │",
+    "│    ‿    ‿   │",
+    "│   ███████   │",
+    " ╲   ✨  ✨    ╱ ",
+    "  ╰────────╯   ",
+  ],
+  thinking: [
+    "    ▴▃▃▃▃▃▃▃▴     ",
+    "  ╭───────────╮  ",
+    " ╱  ◕    ◕    ╲ ",
+    "│     ︿      │",
     "│    ‿    ‿   │",
     "│   ███████   │",
     " ╲             ╱ ",

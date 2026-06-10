@@ -26,25 +26,42 @@ const JUMP_WAVE: readonly Frame[] = [
 
 // 点击动画：左右看
 const LOOK_AROUND: readonly Frame[] = [
-  ...hold('look-right', 0, 5),
-  ...hold('look-left', 0, 5),
+  ...hold('look-right', 0, 4),
+  ...hold('look-left', 0, 4),
   ...hold('default', 0, 1),
 ];
 
-const CLICK_ANIMATIONS: readonly (readonly Frame[])[] = [JUMP_WAVE, LOOK_AROUND];
-
-// 空闲动画：自动左右看 + 偶尔举手（像打招呼）
-const IDLE_LOOP: readonly Frame[] = [
-  ...hold('default', 0, 30),    // 正常站立 1.8 秒
-  ...hold('look-left', 0, 10),  // 向左看 0.6 秒
-  ...hold('default', 0, 20),    // 恢复 1.2 秒
-  ...hold('look-right', 0, 10), // 向右看 0.6 秒
-  ...hold('default', 0, 20),
-  ...hold('arms-up', 0, 5),     // 举一下手（打招呼）0.3 秒
-  ...hold('default', 0, 25),
+// 点击动画：眨眼 + 思考
+const BLINK_THINK: readonly Frame[] = [
+  ...hold('blink', 0, 3),
+  ...hold('thinking', 0, 4),
+  ...hold('default', 0, 1),
 ];
 
-const FRAME_MS = 60;
+// 点击动画：开心挥手
+const WAVE: readonly Frame[] = [
+  ...hold('waving', 0, 6),
+  ...hold('default', 0, 1),
+];
+
+const CLICK_ANIMATIONS: readonly (readonly Frame[])[] = [JUMP_WAVE, LOOK_AROUND, BLINK_THINK, WAVE];
+
+// 空闲动画：更丰富的表情变化
+const IDLE_LOOP: readonly Frame[] = [
+  ...hold('default', 0, 20),     // 正常站立 1.2 秒
+  ...hold('look-left', 0, 6),    // 向左看 0.36 秒
+  ...hold('default', 0, 12),     // 恢复 0.72 秒
+  ...hold('look-right', 0, 6),   // 向右看 0.36 秒
+  ...hold('default', 0, 12),
+  ...hold('blink', 0, 3),        // 眨眼 0.18 秒
+  ...hold('default', 0, 12),
+  ...hold('arms-up', 0, 4),      // 举一下手（打招呼）0.24 秒
+  ...hold('default', 0, 12),
+  ...hold('thinking', 0, 5),     // 思考一下 0.3 秒
+  ...hold('default', 0, 15),
+];
+
+const FRAME_MS = 40; // 更快的帧率让动画更流畅
 const incrementFrame = (i: number) => i + 1;
 const CLAWD_HEIGHT = 7; // 与 Clawd 组件图形高度一致
 

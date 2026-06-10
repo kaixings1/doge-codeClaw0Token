@@ -1,0 +1,46 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": "3000",
+  "backend_host": "127.0.0.1",
+  "backend_port": "8080",
+  "backend_mode": "proxy",
+  "platform": "deepseek",
+  "cookie_string": "HWWAFSESTIME=1780671196263; HWWAFSESID=fa55018a9b94f0e362b4; ds_session_id=b0153795fa084c828bee13ca98ae6a81; smidV2=20260605225322119d5d7a8c776dd94b08f915a92a36930061e107390e75350; .thumbcache_6b2e5483f9d858d7c661c5e276b6a6ae=X4WrHOo2rasTgSgxlLS+QMv7uYDbk3kHM8+URsTEzOWu+nIUWyo/hsa6dOARQiYNy/5ASIk6Oy4yHoASyaRBDA%3D%3D",
+  "storage_state_file": "browser_state.json",
+  "auto_load_storage": true,
+  "browser_type": "chrome",
+  "max_request_size": 1048576,
+  "max_response_size": 1048576,
+  "stream_wait_seconds": 10,
+  "confirm_timeout_seconds": 5,
+  "worker_threads": 3,
+  "max_log_lines": 500,
+  "max_raw_lines": 500,
+  "max_tool_lines": 500,
+  "random_delay_min": 0.3,
+  "random_delay_max": 1.2,
+  "max_requests_per_second": 1,
+  "max_conversation_rounds": 10,
+  "enable_message_compression": false,
+  "compression_summary_prefix": "[前面对话已压缩] ",
+  "enable_zwsp_injection": false,
+  "zwsp_injection_probability": 0.3,
+  "font_family": "Consolas",
+  "font_size": 9,
+  "user_agents": [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+  ],
+  "filter_rules": [
+    {
+      "pattern": "session_token=[a-zA-Z0-9_\\-\\.]+",
+      "replacement": "session_token=***",
+      "enabled": true,
+      "description": "隐藏 Session Token"
+    }
+  ],
+  "auto_load_browser_cookie": true
+}

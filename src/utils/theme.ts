@@ -436,39 +436,40 @@ const lightDaltonizedTheme: Theme = {
 /**
  * Dark theme using explicit RGB values to avoid inconsistencies
  * from users' custom terminal ANSI color definitions
+ * Enhanced with modern, smoother color palette
  */
 const darkTheme: Theme = {
-  autoAccept: 'rgb(175,135,255)', // Electric violet
-  bashBorder: 'rgb(253,93,177)', // Bright pink
+  autoAccept: 'rgb(168, 133, 255)', // Softer electric violet
+  bashBorder: 'rgb(244, 114, 166)', // Softer bright pink
   claude: 'rgb(215,119,87)', // Claude orange
   claudeShimmer: 'rgb(235,159,127)', // Lighter claude orange for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(147,165,255)', // Blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(177,195,255)', // Lighter blue for system spinner shimmer
-  permission: 'rgb(177,185,249)', // Light blue-purple
-  permissionShimmer: 'rgb(207,215,255)', // Lighter blue-purple for shimmer
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(138, 156, 255)', // Smoother blue for system spinner
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(168, 186, 255)', // Lighter blue for system spinner shimmer
+  permission: 'rgb(168, 176, 249)', // Softer light blue-purple
+  permissionShimmer: 'rgb(198, 206, 255)', // Lighter blue-purple for shimmer
   planMode: 'rgb(72,150,140)', // Muted sage green
   ide: 'rgb(71,130,200)', // Muted blue
   promptBorder: 'rgb(136,136,136)', // Medium gray
   promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
   text: 'rgb(255,255,255)', // White
   inverseText: 'rgb(0,0,0)', // Black
-  inactive: 'rgb(153,153,153)', // Light gray
-  inactiveShimmer: 'rgb(193,193,193)', // Lighter gray for shimmer effect
-  subtle: 'rgb(80,80,80)', // Dark gray
-  suggestion: 'rgb(177,185,249)', // Light blue-purple
-  remember: 'rgb(177,185,249)', // Light blue-purple
-  background: 'rgb(0,204,204)', // Bright cyan
-  success: 'rgb(78,186,101)', // Bright green
-  error: 'rgb(255,107,128)', // Bright red
-  warning: 'rgb(255,193,7)', // Bright amber
-  merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(255,223,57)', // Lighter amber for shimmer
-  diffAdded: 'rgb(34,92,43)', // Dark green
-  diffRemoved: 'rgb(122,41,54)', // Dark red
-  diffAddedDimmed: 'rgb(71,88,74)', // Very dark green
-  diffRemovedDimmed: 'rgb(105,72,77)', // Very dark red
-  diffAddedWord: 'rgb(56,166,96)', // Medium green
-  diffRemovedWord: 'rgb(179,89,107)', // Softer red (less intense than bright red)
+  inactive: 'rgb(143,143,143)', // Softer Light gray
+  inactiveShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer effect
+  subtle: 'rgb(90,90,90)', // Darker dark gray
+  suggestion: 'rgb(168, 176, 249)', // Softer light blue-purple
+  remember: 'rgb(168, 176, 249)', // Light blue-purple
+  background: 'rgb(0,184,184)', // More subdued cyan
+  success: 'rgb(68,176,101)', // Softer bright green
+  error: 'rgb(245,97,118)', // Softer bright red
+  warning: 'rgb(245,183,17)', // Warmer bright amber
+  merged: 'rgb(168,133,255)', // Electric violet (matches autoAccept)
+  warningShimmer: 'rgb(245,213,67)', // Lighter amber for shimmer
+  diffAdded: 'rgb(44,102,53)', // Darker green
+  diffRemoved: 'rgb(132,51,64)', // Darker red
+  diffAddedDimmed: 'rgb(81,98,84)', // Very dark green
+  diffRemovedDimmed: 'rgb(115,82,87)', // Very dark red
+  diffAddedWord: 'rgb(66,176,106)', // Medium green
+  diffRemovedWord: 'rgb(189,99,117)', // Softer red (less intense than bright red)
   // Agent colors
   red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
   blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
@@ -485,17 +486,17 @@ const darkTheme: Theme = {
   // TUI V2 colors
   clawd_body: 'rgb(215,119,87)',
   clawd_background: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(55, 55, 55)', // Lighter grey for better visual contrast
-  userMessageBackgroundHover: 'rgb(70, 70, 70)',
-  messageActionsBackground: 'rgb(44, 50, 62)', // cool gray, slight blue
+  userMessageBackground: 'rgb(60, 60, 60)', // Slightly lighter for better contrast
+  userMessageBackgroundHover: 'rgb(75, 75, 75)',
+  messageActionsBackground: 'rgb(50, 55, 68)', // Slightly lighter cool gray, slight blue
   selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
   bashMessageBackgroundColor: 'rgb(65, 60, 65)',
 
   memoryBackgroundColor: 'rgb(55, 65, 70)',
-  rate_limit_fill: 'rgb(177,185,249)', // Light blue-purple
-  rate_limit_empty: 'rgb(80,83,112)', // Medium blue-purple
-  fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
-  fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
+  rate_limit_fill: 'rgb(168, 176, 249)', // Softer light blue-purple
+  rate_limit_empty: 'rgb(70,73,102)', // Medium blue-purple
+  fastMode: 'rgb(245,110,20)', // Softer electric orange for dark bg
+  fastModeShimmer: 'rgb(245,155,60)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelClaude: 'rgb(215,119,87)', // Brand orange
   rainbow_red: 'rgb(235,95,87)',
@@ -612,6 +613,82 @@ export function getTheme(themeName: ThemeName): Theme {
   }
 }
 
+/**
+ * 新年特别主题 - 2026 春节配色方案
+ * 使用更喜庆的红色和金色配色
+ */
+const darkNewYearTheme: Theme = {
+  autoAccept: 'rgb(255, 200, 50)', // 金色
+  bashBorder: 'rgb(255, 100, 100)', // 喜庆红
+  claude: 'rgb(255, 180, 140)', // 暖橙色
+  claudeShimmer: 'rgb(255, 210, 170)', // 更亮的暖橙
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(180, 200, 255)', // 柔和蓝
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(210, 225, 255)',
+  permission: 'rgb(200, 180, 255)',
+  permissionShimmer: 'rgb(230, 210, 255)',
+  planMode: 'rgb(100, 180, 170)',
+  ide: 'rgb(100, 160, 220)',
+  promptBorder: 'rgb(150, 150, 150)',
+  promptBorderShimmer: 'rgb(180, 180, 180)',
+  text: 'rgb(255, 255, 255)',
+  inverseText: 'rgb(0, 0, 0)',
+  inactive: 'rgb(160, 160, 160)',
+  inactiveShimmer: 'rgb(200, 200, 200)',
+  subtle: 'rgb(100, 100, 100)',
+  suggestion: 'rgb(200, 180, 255)',
+  remember: 'rgb(200, 180, 255)',
+  background: 'rgb(100, 180, 180)',
+  success: 'rgb(100, 220, 130)',
+  error: 'rgb(255, 130, 140)',
+  warning: 'rgb(255, 210, 50)',
+  merged: 'rgb(200, 150, 255)',
+  warningShimmer: 'rgb(255, 235, 100)',
+  diffAdded: 'rgb(60, 130, 80)',
+  diffRemoved: 'rgb(140, 60, 70)',
+  diffAddedDimmed: 'rgb(90, 110, 95)',
+  diffRemovedDimmed: 'rgb(120, 80, 85)',
+  diffAddedWord: 'rgb(80, 180, 110)',
+  diffRemovedWord: 'rgb(190, 100, 110)',
+  red_FOR_SUBAGENTS_ONLY: 'rgb(230, 50, 50)',
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(50, 100, 240)',
+  green_FOR_SUBAGENTS_ONLY: 'rgb(30, 180, 80)',
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(220, 160, 10)',
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(160, 60, 220)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(240, 100, 20)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(220, 50, 140)',
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(10, 160, 180)',
+  professionalBlue: 'rgb(110, 160, 210)',
+  chromeYellow: 'rgb(251, 188, 4)',
+  clawd_body: 'rgb(255, 180, 140)',
+  clawd_background: 'rgb(0, 0, 0)',
+  userMessageBackground: 'rgb(65, 60, 65)',
+  userMessageBackgroundHover: 'rgb(80, 75, 75)',
+  messageActionsBackground: 'rgb(55, 60, 75)',
+  selectionBg: 'rgb(45, 85, 130)',
+  bashMessageBackgroundColor: 'rgb(70, 65, 70)',
+  memoryBackgroundColor: 'rgb(60, 70, 75)',
+  rate_limit_fill: 'rgb(200, 180, 255)',
+  rate_limit_empty: 'rgb(85, 88, 117)',
+  fastMode: 'rgb(250, 130, 30)',
+  fastModeShimmer: 'rgb(250, 175, 80)',
+  briefLabelYou: 'rgb(130, 185, 235)',
+  briefLabelClaude: 'rgb(255, 180, 140)',
+  rainbow_red: 'rgb(240, 100, 90)',
+  rainbow_orange: 'rgb(250, 145, 90)',
+  rainbow_yellow: 'rgb(255, 210, 100)',
+  rainbow_green: 'rgb(150, 210, 140)',
+  rainbow_blue: 'rgb(135, 175, 225)',
+  rainbow_indigo: 'rgb(165, 140, 210)',
+  rainbow_violet: 'rgb(210, 140, 190)',
+  rainbow_red_shimmer: 'rgb(255, 165, 155)',
+  rainbow_orange_shimmer: 'rgb(255, 195, 150)',
+  rainbow_yellow_shimmer: 'rgb(255, 240, 155)',
+  rainbow_green_shimmer: 'rgb(195, 240, 195)',
+  rainbow_blue_shimmer: 'rgb(190, 215, 245)',
+  rainbow_indigo_shimmer: 'rgb(205, 195, 235)',
+  rainbow_violet_shimmer: 'rgb(240, 195, 220)',
+}
+
 // Create a chalk instance with 256-color level for Apple Terminal
 // Apple Terminal doesn't handle 24-bit color escape sequences well
 const chalkForChart =
@@ -636,4 +713,9 @@ export function themeColorToAnsi(themeColor: string): string {
   }
   // Fallback to magenta if parsing fails
   return '\x1b[35m'
+}
+
+/** 获取新年主题 */
+export function getNewYearTheme(): Theme {
+  return darkNewYearTheme
 }
