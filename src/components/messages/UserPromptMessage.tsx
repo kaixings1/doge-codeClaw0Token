@@ -73,7 +73,7 @@ export function UserPromptMessage({
     logError(new Error('No content found in user prompt message'));
     return null;
   }
-  return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
+  return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingX={useBriefLayout ? 0 : 1} paddingY={useBriefLayout ? 0 : 0.5} borderRadius={useBriefLayout ? undefined : 1}>
       <HighlightedThinkingText text={displayText} useBriefLayout={useBriefLayout} timestamp={useBriefLayout ? timestamp : undefined} />
     </Box>;
 }

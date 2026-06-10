@@ -436,83 +436,87 @@ const lightDaltonizedTheme: Theme = {
 /**
  * Dark theme using explicit RGB values to avoid inconsistencies
  * from users' custom terminal ANSI color definitions
- * Enhanced with modern, smoother color palette
+ * Enhanced with modern, smoother color palette - More sophisticated and aesthetically pleasing
  */
 const darkTheme: Theme = {
-  autoAccept: 'rgb(168, 133, 255)', // Softer electric violet
-  bashBorder: 'rgb(244, 114, 166)', // Softer bright pink
-  claude: 'rgb(215,119,87)', // Claude orange
-  claudeShimmer: 'rgb(235,159,127)', // Lighter claude orange for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(138, 156, 255)', // Smoother blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(168, 186, 255)', // Lighter blue for system spinner shimmer
-  permission: 'rgb(168, 176, 249)', // Softer light blue-purple
-  permissionShimmer: 'rgb(198, 206, 255)', // Lighter blue-purple for shimmer
-  planMode: 'rgb(72,150,140)', // Muted sage green
-  ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(136,136,136)', // Medium gray
-  promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
-  text: 'rgb(255,255,255)', // White
-  inverseText: 'rgb(0,0,0)', // Black
-  inactive: 'rgb(143,143,143)', // Softer Light gray
-  inactiveShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer effect
-  subtle: 'rgb(90,90,90)', // Darker dark gray
-  suggestion: 'rgb(168, 176, 249)', // Softer light blue-purple
-  remember: 'rgb(168, 176, 249)', // Light blue-purple
-  background: 'rgb(0,184,184)', // More subdued cyan
-  success: 'rgb(68,176,101)', // Softer bright green
-  error: 'rgb(245,97,118)', // Softer bright red
-  warning: 'rgb(245,183,17)', // Warmer bright amber
-  merged: 'rgb(168,133,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(245,213,67)', // Lighter amber for shimmer
-  diffAdded: 'rgb(44,102,53)', // Darker green
-  diffRemoved: 'rgb(132,51,64)', // Darker red
-  diffAddedDimmed: 'rgb(81,98,84)', // Very dark green
-  diffRemovedDimmed: 'rgb(115,82,87)', // Very dark red
-  diffAddedWord: 'rgb(66,176,106)', // Medium green
-  diffRemovedWord: 'rgb(189,99,117)', // Softer red (less intense than bright red)
-  // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
-  green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
-  // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
+  autoAccept: 'rgb(185, 145, 255)', // Vibrant electric violet
+  bashBorder: 'rgb(255, 120, 180)', // Vibrant coral pink
+  claude: 'rgb(255, 165, 120)', // Warm Claude orange - more vibrant
+  claudeShimmer: 'rgb(255, 200, 160)', // Lighter warm orange for shimmer
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(150, 170, 255)', // Modern soft blue
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(180, 195, 255)', // Lighter blue for shimmer
+  permission: 'rgb(180, 170, 240)', // Soft lavender-purple
+  permissionShimmer: 'rgb(205, 195, 250)', // Lighter lavender for shimmer
+  planMode: 'rgb(100, 175, 160)', // Modern teal
+  ide: 'rgb(100, 165, 230)', // Modern blue
+  promptBorder: 'rgb(180, 180, 180)', // Neutral medium gray
+  promptBorderShimmer: 'rgb(210, 210, 210)', // Lighter gray for shimmer
+  text: 'rgb(255,255,255)', // Pure white
+  inverseText: 'rgb(0,0,0)', // Pure black
+  inactive: 'rgb(150,150,150)', // Neutral gray
+  inactiveShimmer: 'rgb(190,190,190)', // Lighter gray for shimmer
+  subtle: 'rgb(110,110,110)', // Softer dark gray
+  suggestion: 'rgb(180, 170, 240)', // Soft lavender (matches permission)
+  remember: 'rgb(180, 170, 240)', // Soft lavender
+  background: 'rgb(80, 200, 200)', // Vibrant cyan (more saturated)
+  success: 'rgb(80, 200, 120)', // Fresh bright green
+  error: 'rgb(255, 100, 120)', // Modern soft red
+  warning: 'rgb(255, 200, 50)', // Warm golden yellow
+  merged: 'rgb(185, 145, 255)', // Electric violet (matches autoAccept)
+  warningShimmer: 'rgb(255, 230, 100)', // Lighter golden for shimmer
+  diffAdded: 'rgb(70, 150, 90)', // Muted green for added lines
+  diffRemoved: 'rgb(160, 80, 90)', // Muted red for removed lines
+  diffAddedDimmed: 'rgb(95, 120, 105)', // Very muted green
+  diffRemovedDimmed: 'rgb(125, 95, 100)', // Very muted red
+  diffAddedWord: 'rgb(100, 180, 130)', // Medium green for word diff
+  diffRemovedWord: 'rgb(210, 120, 130)', // Medium red for word diff
+  // Agent colors - Modernized with better contrast
+  red_FOR_SUBAGENTS_ONLY: 'rgb(255, 80, 80)', // Bright modern red
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(80, 140, 255)', // Bright modern blue
+  green_FOR_SUBAGENTS_ONLY: 'rgb(70, 200, 120)', // Bright modern green
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(255, 200, 50)', // Bright golden yellow
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(190, 100, 255)', // Vibrant purple
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(255, 140, 40)', // Vibrant orange
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(255, 80, 170)', // Vibrant pink
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(50, 200, 210)', // Bright cyan
+  // Grove colors - Professional blue
+  professionalBlue: 'rgb(130, 170, 210)',
   // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
-  clawd_background: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(60, 60, 60)', // Slightly lighter for better contrast
-  userMessageBackgroundHover: 'rgb(75, 75, 75)',
-  messageActionsBackground: 'rgb(50, 55, 68)', // Slightly lighter cool gray, slight blue
-  selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
-  bashMessageBackgroundColor: 'rgb(65, 60, 65)',
+  chromeYellow: 'rgb(255, 200, 50)', // Bright chrome yellow
+  // TUI V2 colors - Enhanced for better visibility and aesthetics
+  clawd_body: 'rgb(255, 180, 140)', // Warmer, more vibrant
+  clawd_background: 'rgb(25, 25, 30)', // Darker background for better contrast
+  userMessageBackground: 'rgb(65, 60, 70)', // Rich dark purple-gray for user messages (more sophisticated)
+  userMessageBackgroundHover: 'rgb(80, 75, 85)', // Slightly lighter on hover
+  messageActionsBackground: 'rgb(50, 55, 70)', // Deep cool gray-blue for actions
+  selectionBg: 'rgb(70, 130, 200)', // Modern selection blue (more vibrant)
+  bashMessageBackgroundColor: 'rgb(45, 45, 50)', // Subtle bash output background
+  memoryBackgroundColor: 'rgb(40, 50, 65)', // Cool deep blue-gray for memory context
+  assistantMessageBorder: 'rgb(80, 75, 90)', // Subtle border for assistant messages
+  codeBlockBg: 'rgb(35, 35, 40)', // Darker background for code blocks
+  codeBlockBorder: 'rgb(60, 60, 70)', // Subtle border for code blocks
+  linkColor: 'rgb(140, 180, 240)', // Soft blue for links
 
-  memoryBackgroundColor: 'rgb(55, 65, 70)',
-  rate_limit_fill: 'rgb(168, 176, 249)', // Softer light blue-purple
-  rate_limit_empty: 'rgb(70,73,102)', // Medium blue-purple
-  fastMode: 'rgb(245,110,20)', // Softer electric orange for dark bg
-  fastModeShimmer: 'rgb(245,155,60)', // Lighter orange for shimmer
-  briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelClaude: 'rgb(215,119,87)', // Brand orange
-  rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
-  rainbow_yellow: 'rgb(250,195,95)',
-  rainbow_green: 'rgb(145,200,130)',
-  rainbow_blue: 'rgb(130,170,220)',
-  rainbow_indigo: 'rgb(155,130,200)',
-  rainbow_violet: 'rgb(200,130,180)',
-  rainbow_red_shimmer: 'rgb(250,155,147)',
-  rainbow_orange_shimmer: 'rgb(255,185,137)',
-  rainbow_yellow_shimmer: 'rgb(255,225,155)',
-  rainbow_green_shimmer: 'rgb(185,230,180)',
-  rainbow_blue_shimmer: 'rgb(180,205,240)',
-  rainbow_indigo_shimmer: 'rgb(195,180,230)',
-  rainbow_violet_shimmer: 'rgb(230,180,210)',
+  rate_limit_fill: 'rgb(180, 170, 240)', // Soft lavender
+  rate_limit_empty: 'rgb(80, 80, 100)', // Medium blue-gray
+  fastMode: 'rgb(255, 150, 60)', // Warm orange
+  fastModeShimmer: 'rgb(255, 180, 100)', // Lighter warm orange
+  briefLabelYou: 'rgb(140, 180, 240)', // Soft blue
+  briefLabelClaude: 'rgb(255, 165, 120)', // Warm orange (matches claude)
+  rainbow_red: 'rgb(255, 120, 100)',
+  rainbow_orange: 'rgb(255, 160, 100)',
+  rainbow_yellow: 'rgb(255, 220, 100)',
+  rainbow_green: 'rgb(140, 220, 140)',
+  rainbow_blue: 'rgb(140, 180, 240)',
+  rainbow_indigo: 'rgb(170, 150, 230)',
+  rainbow_violet: 'rgb(220, 150, 190)',
+  rainbow_red_shimmer: 'rgb(255, 170, 160)',
+  rainbow_orange_shimmer: 'rgb(255, 200, 160)',
+  rainbow_yellow_shimmer: 'rgb(255, 240, 180)',
+  rainbow_green_shimmer: 'rgb(180, 240, 190)',
+  rainbow_blue_shimmer: 'rgb(180, 210, 250)',
+  rainbow_indigo_shimmer: 'rgb(200, 180, 240)',
+  rainbow_violet_shimmer: 'rgb(240, 190, 220)',
 }
 
 /**

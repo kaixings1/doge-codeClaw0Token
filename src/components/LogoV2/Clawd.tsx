@@ -126,7 +126,7 @@ const maxLen = Math.max(...Object.values(GRAPHICS).flat().map(l => l.length));
   GRAPHICS[pose] = GRAPHICS[pose].map(line => line.padEnd(maxLen, ' '));
 });
 
-// 糖果色渐变
+// 现代化渐变色 - 更精致、更鲜艳的配色方案
 function hslToHex(h: number, s: number, l: number): string {
   const a = s * Math.min(l, 1 - l);
   const f = (n: number) => {
@@ -137,17 +137,22 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-function getCharColor(ch: string, row: number, totalRows: number): string | undefined {
-  if ("◕◉♥✨-".includes(ch)) return "#ffffff";
+// 现代配色方案 - 使用 RGB 字符串格式，更鲜艳生动
+function getCharColor(ch: string, row: number, totalRows: number): string {
+  // 表情符号 - 白色高亮
+  if ("◕◉♥✨-".includes(ch)) return "text";
+  // 边框和结构 - 渐变紫色到蓝色 (更鲜艳)
   if ("╭╮╰╯╱╲│─▴▃".includes(ch)) {
     const t = row / (totalRows - 1);
-    return hslToHex(340 - t * 30, 0.45, 0.65 + t * 0.15);
+    return hslToHex(330 - t * 40, 0.6, 0.55 + t * 0.2);
   }
+  // 内部装饰符号 - 更鲜艳的粉色系
   if ("ω‿zε".includes(ch)) {
-    return row < totalRows / 2 ? "#ffaacc" : "#ff88bb";
+    return row < totalRows / 2 ? "rgb(255,200,220)" : "rgb(255,170,200)";
   }
-  const hue = 340 + (row / totalRows) * 50;
-  return hslToHex(hue, 0.55, 0.7);
+  // 主体 - 更鲜艳的彩虹渐变 (从粉紫到橙黄)
+  const hue = 330 + (row / totalRows) * 60;
+  return hslToHex(hue, 0.65, 0.65);
 }
 
 function renderLine(line: string, rowIdx: number, totalRows: number): React.ReactNode {
@@ -163,7 +168,6 @@ export function Clawd({ pose = 'default' }: Props) {
 
 
 
-
   return (
     <Box flexDirection="column" alignItems="center">
       {rows.map((line, idx) => (
@@ -172,3 +176,4 @@ export function Clawd({ pose = 'default' }: Props) {
     </Box>
   );
 }
+
