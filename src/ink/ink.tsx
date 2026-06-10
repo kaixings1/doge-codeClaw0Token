@@ -362,6 +362,21 @@ export default class Ink {
     const renderStart = performance.now();
     const terminalWidth = this.options.stdout.columns || 80;
     const terminalRows = this.options.stdout.rows || 24;
+
+    // 在渲染前设置滚动框的 hasSelection 属性，以便 render-node-to-output 知道
+    // 在有活动选择时禁止自动跟随滚动（防止 logo 动画等触发滚动重置）
+    // 必须在渲染之前设置，因为跟随滚动逻辑在渲染过程中执行
+    if (this.altScreenActive) {
+      const hasSel = hasSelection(this.selection);
+      // 遍历所有滚动框节点，设置 hasSelection 属性
+      // 使用 this.rootNode（渲染的根节点）
+      dom.walk(this.rootNode, node => {
+        if (node.nodeName === 'ink-box' && node.style.overflowY === 'scroll') {
+          node.attributes['hasSelection'] = hasSel;
+        }
+      });
+    }
+
     const frame = this.renderer({
       frontFrame: this.frontFrame,
       backFrame: this.backFrame,

@@ -1194,10 +1194,11 @@ export function useTypeahead({
     } else if (suggestionType === 'directory' && selectedSuggestion < suggestions.length) {
       if (suggestion) {
         // 在命令上下文（例如 /add-dir）中，回车提交命令而不是应用目录建议。
-        // 只需清除建议，让提交处理器处理当前输入。
+        // 清除建议并提交命令。
         if (isCommandInput(input)) {
           debouncedFetchFileSuggestions.cancel();
           clearSuggestions();
+          onSubmit(input, true);
           return;
         }
 

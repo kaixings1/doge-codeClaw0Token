@@ -482,3 +482,17 @@ export function findOwnerChainAtRow(root: DOMElement, y: number): string[] {
     }
   }
 }
+
+/**
+ * Walk the DOM tree and call a callback for each element node.
+ * Used by Ink to set attributes on scroll containers before rendering.
+ */
+export function walk(
+  node: DOMElement,
+  callback: (node: DOMElement) => void,
+): void {
+  callback(node)
+  for (const child of node.childNodes) {
+    if (isDOMElement(child)) walk(child, callback)
+  }
+}
