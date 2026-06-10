@@ -102,6 +102,11 @@ type TitleAndBranch = {
 async function generateTitleAndBranch(description: string, signal: AbortSignal): Promise<TitleAndBranch> {
   const fallbackTitle = truncateToWidth(description, 75);
   const fallbackBranch = 'claude/task';
+  // 直接返回 fallback，不发任何请求
+  return {
+    title: fallbackTitle,
+    branchName: fallbackBranch
+  };
   try {
     const userPrompt = SESSION_TITLE_AND_BRANCH_PROMPT.replace('{description}', description);
     const response = await queryHaiku({

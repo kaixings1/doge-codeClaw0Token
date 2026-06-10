@@ -1,6 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: 仅 ANT 的导入标记不得重新排序
 
-logForDebugging('===== NEW QUERY.TS LOADED =====');
 import type {
   ToolResultBlockParam,
   ToolUseBlock,
@@ -114,6 +113,15 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
+import {
+  shouldTruncate,
+  truncateMessages,
+  getTruncateConfig,
+} from './services/compact/truncateContext.js'
+import {
+  checkTruncateFrequency,
+  recordTruncateEvent,
+} from './utils/truncateRecovery.js'
 
 const snipModule = feature('HISTORY_SNIP')
   ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
@@ -122,6 +130,10 @@ const taskSummaryModule = feature('BG_SESSIONS')
   ? (require('./utils/taskSummary.js') as typeof import('./utils/taskSummary.js'))
   : null
 
+/**
+ * 为缺失工具结果的助手消息生成合成工具结果消息。
+ * 用于异常恢复场景，例如模型回退或错误终止时。
+ */
 function* yieldMissingToolResultBlocks(
   assistantMessages: AssistantMessage[],
   errorMessage: string,
@@ -195,28 +207,30 @@ export async function* query(
   | ToolUseSummaryMessage,
   Terminal
 > {
-		    try {
-        logForDebugging("QUERY START");
-        // ... 原有代码
+  try {
+	    logForDebugging("QUERY START");
+	    // ... 原有代码
+	    const consumedCommandUuids: string[] = []
+	    const terminal = yield* queryLoop(params, consumedCommandUuids)
+	    for (const uuid of consumedCommandUuids) {
+	    notifyCommandLifecycle(uuid, 'completed')
+	    }
     } catch (err) {
         logForDebugging("QUERY FATAL ERROR:", err);
         throw err;
     }
     logForDebugging("🔥🔥🔥 QUERY FUNCTION CALLED 🔥🔥🔥");
     logForDebugging('[DEBUG] query() called');
-  const consumedCommandUuids: string[] = []
-  const terminal = yield* queryLoop(params, consumedCommandUuids)
-  for (const uuid of consumedCommandUuids) {
-    notifyCommandLifecycle(uuid, 'completed')
-  }
 
   return terminal
 }
 
+// [REFACTOR] 状态构造辅助函数，消除 6 处重复赋值
 function createNextState(
   base: State,
   overrides: Partial<State> & { transition: Continue },
 ): State {
+  // 重置字段遵循“大多数分支重置”原则
   const defaultReset = {
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
@@ -231,6 +245,7 @@ function createNextState(
   }
 }
 
+// [REFACTOR] 附件产出收集生成器，消除重复的 for...of + yield + push
 async function* yieldAndCollectAttachments<T extends Message>(
   attachments: AsyncIterable<T> | T[],
   targetArray: Message[],
@@ -241,6 +256,7 @@ async function* yieldAndCollectAttachments<T extends Message>(
   }
 }
 
+// [REFACTOR] 任务预算扣减逻辑提取
 function updateTaskBudgetRemaining(
   taskBudget: { total: number } | undefined,
   currentRemaining: number | undefined,
@@ -251,6 +267,7 @@ function updateTaskBudgetRemaining(
   return Math.max(0, (currentRemaining ?? taskBudget.total) - preCompactContext)
 }
 
+// [REFACTOR] 中止清理逻辑提取
 async function handleAbortCleanup(toolUseContext: ToolUseContext): Promise<void> {
   if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
     try {
@@ -309,8 +326,8 @@ async function* queryLoop(
   );
    
   while (true) {
-		 logForDebugging('[DEBUG] START');
- logForDebugging('========================================');
+    logForDebugging('[DEBUG] START');
+    logForDebugging('========================================');
     logForDebugging('[FATAL] queryLoop is running, turnCount=' + state.turnCount);
     logForDebugging('========================================');
     let { toolUseContext } = state
@@ -361,6 +378,31 @@ async function* queryLoop(
 
     let tracking = autoCompactTracking
 
+		// ========== 强制截断上下文：按估算 token 限制 ==========
+		const MAX_CONTEXT_TOKENS = 8000;  // 根据你的模型上下文窗口调整（如 4096, 8192）
+		let totalTokens = 0;
+		let trimmed = [];
+		for (let i = messagesForQuery.length - 1; i >= 0; i--) {
+				const msg = messagesForQuery[i];
+				// 粗略估算：1 token ≈ 3 字符（中英文混合）
+				const approxTokens = (msg.content?.length || 0) / 3;
+				// 始终保留第一条系统消息（如果有）
+				if (i === 0 && msg.role === 'system') {
+						trimmed.unshift(msg);
+						continue;
+				}
+				if (totalTokens + approxTokens > MAX_CONTEXT_TOKENS) {
+						break;
+				}
+				trimmed.unshift(msg);
+				totalTokens += approxTokens;
+		}
+		if (trimmed.length < messagesForQuery.length) {
+				console.log(`[Context Trim] 从 ${messagesForQuery.length} 条消息截断至 ${trimmed.length} 条，估算 token ${totalTokens}`);
+				messagesForQuery = trimmed;
+		}
+		// ========================================================
+
     const persistReplacements =
       querySource.startsWith('agent:') ||
       querySource.startsWith('repl_main_thread')
@@ -384,6 +426,7 @@ async function* queryLoop(
     )
 
     let snipTokensFreed = 0
+    // [新] 先执行 snip 精简
     if (feature('HISTORY_SNIP')) {
       queryCheckpoint('query_snip_start')
       const snipResult = snipModule!.snipCompactIfNeeded(messagesForQuery)
@@ -471,6 +514,7 @@ async function* queryLoop(
         queryDepth: queryTracking.depth,
       })
 
+      // [REFACTOR] 使用提取的函数更新任务预算
       taskBudgetRemaining = updateTaskBudgetRemaining(
         params.taskBudget,
         taskBudgetRemaining,
@@ -574,7 +618,7 @@ async function* queryLoop(
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
           
-          const callModelGen = deps.callModel({
+          for await (const message of deps.callModel({
             messages: prependUserContext(messagesForQuery, userContext),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
@@ -623,11 +667,8 @@ async function* queryLoop(
                 },
               }),
             },
-          });
+          })) {
           
-          let genResult = await callModelGen.next();
-          while (!genResult.done) {
-            const message = genResult.value;
             if (streamingFallbackOccured) {
               logForDebugging('[DEBUG] assistantMessages count=' + assistantMessages.length);
               for (const msg of assistantMessages) {
@@ -658,8 +699,8 @@ async function* queryLoop(
             let yieldMessage: typeof message = message
             if (message.type === 'assistant') {
 							
-							    logForDebugging(`[DEBUG] 1 Received assistant message, content length=${message.message.content.length}`);
-    logForDebugging(`[DEBUG] 1 Content types: ${JSON.stringify(message.message.content.map(c => c.type))}`);
+            logForDebugging(`[DEBUG] 1 Received assistant message, content length=${message.message.content.length}`);
+            logForDebugging(`[DEBUG] 1 Content types: ${JSON.stringify(message.message.content.map(c => c.type))}`);
 		
 		
               let clonedContent: typeof message.message.content | undefined
@@ -723,60 +764,21 @@ async function* queryLoop(
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
+            if (!withheld) {
+              yield yieldMessage
+            }
             if (message.type === 'assistant') {
 							
-							    logForDebugging(`[DEBUG] 2 Received assistant message, content length=${message.message.content.length}`);
-    logForDebugging(`[DEBUG]  2 Content types: ${JSON.stringify(message.message.content.map(c => c.type))}`);
+            logForDebugging(`[DEBUG] 2 Received assistant message, content length=${message.message.content.length}`);
+            logForDebugging(`[DEBUG]  2 Content types: ${JSON.stringify(message.message.content.map(c => c.type))}`);
 		
-              assistantMessages.push(message);
+              assistantMessages.push(message)
 
-              let msgToolUseBlocks = message.message.content.filter(
-                (c): c is ToolUseBlock => c.type === 'tool_use'
-              );
+              const msgToolUseBlocks = message.message.content.filter(
+                content => content.type === 'tool_use',
 
-              if (msgToolUseBlocks.length === 0 && (message as any).tool_calls) {
-                const toolCalls = (message as any).tool_calls;
-                logForDebugging('[DEBUG] found tool_calls, converting:', JSON.stringify(toolCalls));
-                try {
-                  msgToolUseBlocks = toolCalls.map((tc: any) => {
-                    let input = {};
-                    try {
-                      input = JSON.parse(tc.function.arguments);
-                    } catch (parseErr) {
-                      logError(`解析工具 ${tc.function.name} 参数失败: ${parseErr}`);
-                    }
-                    return {
-                      type: 'tool_use' as const,
-                      id: tc.id,
-                      name: tc.function.name,
-                      input,
-                    };
-                  });
-                } catch (err) {
-                  logError(`转换 tool_calls 失败: ${err instanceof Error ? err.message : String(err)}`);
-                }
-              }
 
-              for (const block of msgToolUseBlocks) {
-                if (block.name === 'Arguments') {
-                  logForDebugging('[FIX] Detected broken tool name "Arguments", attempting to infer real name');
-                  const input = block.input;
-                  if (typeof input === 'object' && input !== null) {
-                    if ('pattern' in input) {
-                      if ('ignore_case' in input || 'output_mode' in input) {
-                        block.name = 'Grep';
-                        logForDebugging('[FIX] Renamed tool to Grep based on arguments');
-                      } else {
-                        block.name = 'Glob';
-                        logForDebugging('[FIX] Renamed tool to Glob based on arguments');
-                      }
-                    } else if ('directory' in input && 'depth' in input) {
-                      block.name = 'ListFiles';
-                      logForDebugging('[FIX] Renamed tool to ListFiles based on arguments');
-                    }
-                  }
-                }
-              }
+              ) as ToolUseBlock[]
 
               if (msgToolUseBlocks.length > 0) {
                 logForDebugging('[DEBUG] found tool blocks, count=' + msgToolUseBlocks.length);
@@ -788,102 +790,36 @@ async function* queryLoop(
                 logForDebugging(`[DEBUG] tool_calls exists? ${!!(message as any).tool_calls}`);
               }
 
-              if (streamingToolExecutor && !toolUseContext.abortController.signal.aborted) {
+              if (
+                streamingToolExecutor &&
+                !toolUseContext.abortController.signal.aborted
+              ) {
                 for (const toolBlock of msgToolUseBlocks) {
-                  streamingToolExecutor.addTool(toolBlock, message);
+                  streamingToolExecutor.addTool(toolBlock, message)
                 }
               }
 
-              let clonedContent: typeof message.message.content | undefined;
-              for (let i = 0; i < message.message.content.length; i++) {
-                const block = message.message.content[i];
-                if (block?.type === 'tool_use' && typeof block.input === 'object' && block.input !== null) {
-                  const tool = findToolByName(toolUseContext.options.tools, block.name);
-                  if (tool?.backfillObservableInput) {
-                    try {
-                      const originalInput = block.input as Record<string, unknown>;
-                      const inputCopy = { ...originalInput };
-                      tool.backfillObservableInput(inputCopy);
-                      const addedFields = Object.keys(inputCopy).some(k => !(k in originalInput));
-                      if (addedFields) {
-                        clonedContent ??= [...message.message.content];
-                        clonedContent[i] = { ...block, input: inputCopy };
-                      }
-                    } catch (err) {
-                      logError(`工具 ${block.name} 回填输入失败: ${err instanceof Error ? err.message : String(err)}`);
-                    }
-                  }
-                }
-              }
-              if (clonedContent) {
-                yieldMessage = {
-                  ...message,
-                  message: { ...message.message, content: clonedContent },
-                };
-              }
             }
 
-            if (!withheld) {
-              yield yieldMessage;
-            }
-
-            if (streamingToolExecutor && !toolUseContext.abortController.signal.aborted) {
-              try {
+            if (
+              streamingToolExecutor &&
+              !toolUseContext.abortController.signal.aborted
+            ) {
                 for (const result of streamingToolExecutor.getCompletedResults()) {
                   if (result.message) {
-                    yield result.message;
+                  yield result.message
                     toolResults.push(
                       ...normalizeMessagesForAPI(
                         [result.message],
                         toolUseContext.options.tools,
                       ).filter(_ => _.type === 'user'),
-                    );
-                  }
+                  )
                 }
-              } catch (err) {
-                logError(`流式工具执行结果处理失败: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
 
-            if (message.type === 'final_message') {
-              const finalMsg = (message as any).message;
-              logForDebugging('[DEBUG] Received final_message event, content length=', finalMsg?.content?.length);
-              if (finalMsg && finalMsg.content) {
-                const toolUseBlocksFromFinal = finalMsg.content.filter((c: any) => c.type === 'tool_use');
-                for (const block of toolUseBlocksFromFinal) {
-                  logForDebugging('[DEBUG] final_message contains tool use:', block.name);
-                  const assistantMsg: AssistantMessage = {
-                    type: 'assistant',
-                    message: {
-                      role: 'assistant',
-                      content: [block],
-                      usage: finalMsg.usage,
-                    },
-                    uuid: crypto.randomUUID(),
-                    parentUuid: undefined,
-                    source: 'api',
-                  };
-                  assistantMessages.push(assistantMsg);
-                  const toolUseBlock: ToolUseBlock = {
-                    type: 'tool_use',
-                    id: block.id,
-                    name: block.name,
-                    input: block.input,
-                  };
-                  toolUseBlocks.push(toolUseBlock);
-                  needsFollowUp = true;
-                  if (streamingToolExecutor && !toolUseContext.abortController.signal.aborted) {
-                    streamingToolExecutor.addTool(toolUseBlock, assistantMsg);
-                  }
-                }
-              }
-              genResult = await callModelGen.next();
-              continue;
-            }
 
-            genResult = await callModelGen.next();
           }
-          logForDebugging('[DEBUG] callModelGen finished');
           
           queryCheckpoint('query_api_streaming_end')
 
@@ -1001,9 +937,7 @@ async function* queryLoop(
         systemContext,
         toolUseContext,
         querySource,
-      ).catch(err => {
-        logError(`后采样钩子执行失败: ${err instanceof Error ? err.message : String(err)}`)
-      })
+      )
     }
 
     if (toolUseContext.abortController.signal.aborted) {
@@ -1023,6 +957,7 @@ async function* queryLoop(
           '被用户中断',
         )
       }
+      // [REFACTOR] 使用提取的中止清理函数
       await handleAbortCleanup(toolUseContext)
 
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
@@ -1035,19 +970,13 @@ async function* queryLoop(
 
     if (pendingToolUseSummary) {
       const summaryStart = Date.now()
-      let summary: ToolUseSummaryMessage | null = null
-      try {
-        summary = await pendingToolUseSummary
+      const summary = await pendingToolUseSummary
         const summaryDuration = Date.now() - summaryStart
         
         if (summaryDuration > 1000) {
           logEvent('tengu_slow_tool_summary', {
             duration_ms: summaryDuration,
           })
-        }
-      } catch (err) {
-        logError(`工具摘要生成失败: ${err instanceof Error ? err.message : String(err)}`)
-        summary = null
       }
       
       if (summary) {
@@ -1096,6 +1025,7 @@ async function* queryLoop(
             querySource,
           )
           if (drained.committed > 0) {
+            // [REFACTOR] 使用 createNextState
             state = createNextState(state, {
               messages: drained.messages,
               transition: {
@@ -1123,6 +1053,7 @@ async function* queryLoop(
         })
 
         if (compacted) {
+          // [REFACTOR] 使用提取的函数更新任务预算
           taskBudgetRemaining = updateTaskBudgetRemaining(
             params.taskBudget,
             taskBudgetRemaining,
@@ -1170,7 +1101,7 @@ async function* queryLoop(
           })
           state = createNextState(state, {
             maxOutputTokensOverride: ESCALATED_MAX_TOKENS,
-            maxOutputTokensRecoveryCount: maxOutputTokensRecoveryCount,
+            maxOutputTokensRecoveryCount: maxOutputTokensRecoveryCount, // 保留原值
             transition: { reason: 'max_output_tokens_escalate' },
           })
           continue
@@ -1184,6 +1115,7 @@ async function* queryLoop(
             isMeta: true,
           })
 
+          // [FIX] 明确增加 turnCount，之前遗漏导致 maxTurns 判断不准
           state = createNextState(state, {
             messages: [
               ...messagesForQuery,
@@ -1234,6 +1166,7 @@ async function* queryLoop(
             ...stopHookResult.blockingErrors,
           ],
           stopHookActive: true,
+          // 保留 hasAttemptedReactiveCompact 不变，避免死循环
           hasAttemptedReactiveCompact,
           transition: { reason: 'stop_hook_blocking' },
         })
@@ -1282,25 +1215,6 @@ async function* queryLoop(
         }
       }
 
-      // 自动继续模式：任务完成时注入继续消息，防止对话意外中断
-      if (isAutoContinueEnabled()) {
-        logForDebugging('[AutoContinue] 任务完成，自动注入继续消息')
-        state = createNextState(state, {
-          messages: [
-            ...messagesForQuery,
-            ...assistantMessages,
-            createUserMessage({
-              content: '请继续完成你的回答，不要中途停止。如果还有未完成的内容，请继续输出。',
-              isMeta: true,
-            }),
-          ],
-          turnCount: turnCount + 1,
-          transition: { reason: 'auto_continue_on_complete' },
-        })
-        playTaskCompleteSound()
-        continue
-      }
-
       playTaskCompleteSound()
       return { reason: 'completed' }
     }
@@ -1328,63 +1242,31 @@ async function* queryLoop(
   ? streamingToolExecutor.getRemainingResults()
   : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
 
-	let hasAnyUpdate = false
-	try {
-			for await (const update of toolUpdates) {
-				hasAnyUpdate = true
-				const _logMsg = update.message
-				let _logData: Record<string, unknown>
-				if (_logMsg?.type === 'progress') {
-					_logData = { type: 'progress', toolUseID: (_logMsg as any).toolUseID, data: (_logMsg as any).data }
-				} else if (_logMsg?.type === 'user') {
-					const _blocks = _logMsg.message?.content
-					if (Array.isArray(_blocks)) {
-						const _tr = _blocks.find((b: any) => b.type === 'tool_result')
-						const _toolUseId = _tr?.tool_use_id ?? '?'
-						const _isErr = _tr?.is_error ?? false
-						const _content = typeof _tr?.content === 'string' ? _tr.content.slice(0, 300) : _tr ? '(非文本)' : '(无tool_result)'
-						_logData = { type: 'user', tool_use_id: _toolUseId, isError: _isErr, contentPreview: _content }
-					} else {
-						_logData = { type: 'user', raw: 'content非数组' }
-					}
-				} else {
-					_logData = { type: _logMsg?.type }
-				}
-				logForDebugging(`[TOOL_EXEC] 收到工具执行结果: ${JSON.stringify(_logData)}`)
+    for await (const update of toolUpdates) {
 				
-				if (update.message) {
-					yield update.message
+      if (update.message) {
+        yield update.message
 
-						if (
-							update.message.type === 'attachment' &&
-							update.message.attachment.type === 'hook_stopped_continuation'
-						) {
-							shouldPreventContinuation = true
-						}
+        if (
+          update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_stopped_continuation'
+        ) {
+          shouldPreventContinuation = true
+        }
 
-						toolResults.push(
-							...normalizeMessagesForAPI(
-								[update.message],
-								toolUseContext.options.tools,
-							).filter(_ => _.type === 'user'),
-						)
-					}
-					if (update.newContext) {
-						updatedToolUseContext = {
-							...update.newContext,
-							queryTracking,
-						}
-					}
-				}
-				if (!hasAnyUpdate && toolUseBlocks.length > 0) {
-				logForDebugging('[TOOL_EXEC] 警告: 有工具调用但没有任何更新产生', {
-					toolUseBlocks: toolUseBlocks.map(t => ({ name: t.name, id: t.id }))
-				})
-			}
-    } catch (err) {
-      logError(`工具执行失败: ${err instanceof Error ? err.message : String(err)}`)
-      yield* yieldMissingToolResultBlocks(assistantMessages, `工具执行失败: ${err instanceof Error ? err.message : String(err)}`)
-      shouldPreventContinuation = true
+        toolResults.push(
+          ...normalizeMessagesForAPI(
+            [update.message],
+            toolUseContext.options.tools,
+          ).filter(_ => _.type === 'user'),
+        )
+      }
+      if (update.newContext) {
+        updatedToolUseContext = {
+          ...update.newContext,
+          queryTracking,
+        }
+      }
     }
     queryCheckpoint('query_tool_execution_end')
 
@@ -1460,6 +1342,7 @@ async function* queryLoop(
     }
 
     if (toolUseContext.abortController.signal.aborted) {
+      // [REFACTOR] 使用提取的中止清理函数
       await handleAbortCleanup(toolUseContext)
 
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
@@ -1516,6 +1399,7 @@ async function* queryLoop(
       return cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
     })
 
+    // [REFACTOR] 使用 yieldAndCollectAttachments 消除重复
     yield* yieldAndCollectAttachments(
       getAttachmentMessages(
         null,
@@ -1534,9 +1418,7 @@ async function* queryLoop(
       pendingMemoryPrefetch.consumedOnIteration === -1
     ) {
       const memoryPrefetchStart = Date.now()
-      let memoryAttachments: Awaited<typeof pendingMemoryPrefetch.promise> = []
-      try {
-        memoryAttachments = filterDuplicateMemoryAttachments(
+      const memoryAttachments = filterDuplicateMemoryAttachments(
           await pendingMemoryPrefetch.promise,
           toolUseContext.readFileState,
         )
@@ -1546,16 +1428,14 @@ async function* queryLoop(
           logEvent('tengu_slow_memory_prefetch', {
             duration_ms: memoryPrefetchDuration,
           })
-        }
-      } catch (err) {
-        logError(`内存预取失败: ${err instanceof Error ? err.message : String(err)}`)
-        memoryAttachments = []
       }
       
+      // [REFACTOR] 使用 yieldAndCollectAttachments
       yield* yieldAndCollectAttachments(
         memoryAttachments.map(createAttachmentMessage),
         toolResults,
       )
+      // [FIX] 使用 turnCount 而非 turnCount - 1，保证语义准确
       pendingMemoryPrefetch.consumedOnIteration = turnCount
     }
 
@@ -1653,6 +1533,7 @@ async function* queryLoop(
     }
 
     queryCheckpoint('query_recursive_call')
+    // [REFACTOR] 最终构造下一状态
     state = createNextState(state, {
       messages: [...messagesForQuery, ...assistantMessages, ...toolResults],
       toolUseContext: toolUseContextWithQueryTracking,

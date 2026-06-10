@@ -31,10 +31,6 @@ class BootstrapBoundary extends React.Component<{
   override componentDidCatch(error: Error): void {
     const message = error?.stack ?? error?.message ?? String(error);
     console.error(`[restored-app-bootstrap] ${message}`);
-    // 当进程没有 TTY stdin 时（例如通过 Bash 管道启动），Ink 无法初始化 raw mode。
-    // BootstrapBoundary 不能只是渲染错误 UI 而不退出——那样进程会永远挂起，
-    // 父进程（如 BashTool）会死等子进程结束。
-    process.exit(1);
   }
   override render(): React.ReactNode {
     if (!this.state.error) {

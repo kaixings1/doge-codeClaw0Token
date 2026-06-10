@@ -47,7 +47,7 @@ const isDebugToStdErr = () => process.env.DEBUG === 'true' || process.env.DEBUG 
 
 export async function getAnthropicClient({
   apiKey,
-  maxRetries,
+  maxRetries = 0,
   model,
   fetchOverride,
   source,
@@ -102,7 +102,7 @@ export async function getAnthropicClient({
 
   const ARGS = {
     defaultHeaders,
-    maxRetries,
+    maxRetries:0,
     timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
@@ -375,6 +375,8 @@ function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
 ): ClientOptions['fetch'] {
+	
+
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
   // 仅发送给第一方 API — Bedrock/Vertex/Foundry 不记录它
@@ -456,6 +458,26 @@ function buildFetch(
         // body 不是 JSON，不做处理
       }
     }
+	if (init?.body && typeof init.body === 'string') {
+		try {
+			 
+			const body = JSON.parse(init.body);
+			console.error("===== [REQUEST] =====");
+			console.error("URL:", input instanceof Request ? input.url : String(input));
+			console.error("Model:", body.model);
+			console.error("Max tokens:", body.max_tokens);
+			console.error("Messages count:", body.messages?.length);
+			// 打印前200字符的body概览
+			console.error("Body preview:", init.body.slice(0, 200));
+			console.error("===================");
+			// 小模型请求的特征：model 字段为 Haiku，且 max_tokens 通常很小
+			if (body.model && body.model.includes('haiku') && body.max_tokens <= 200) {
+				console.error("[SKIP] 拦截小模型请求（标题生成等）");
+				return Promise.resolve(new Response(JSON.stringify({ content: [{ text: "" }] }), { status: 200 }));
+			}
+		} catch(e) {}
+	}
+
     try {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       const url = input instanceof Request ? input.url : String(input)
@@ -466,6 +488,7 @@ function buildFetch(
     } catch {
       // 绝不让日志导致 fetch 崩溃
     }
+		
     return inner(input, { ...init, headers })
   }
 }

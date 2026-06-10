@@ -5,39 +5,31 @@ import * as React from 'react'
 
 export const call: LocalJSXCommandCall = async (onDone, _context, _args) => {
   const [step, setStep] = React.useState(0)
-  const steps = [
-    { title: '👋 欢迎', content: '欢迎使用 Claude Code！按 Enter 开始配置' },
-    { title: '📝 角色', content: '你的主要开发角色是什么？', options: ['后端', '前端', '全栈', 'DevOps', '其他'] },
-    { title: '🔧 任务', content: '最常用的任务？', options: ['编码', '审查', '调试', '重构', '文档'] },
-    { title: '✅ 完成', content: '配置完成！感谢使用' }
-  ]
-  const [answers, setAnswers] = React.useState<Record<number, number>>({})
+  const steps = ['欢迎使用 Doge Code！', '配置你的 API 端点', '选择模型', '完成设置']
 
-  useInput((input, key) => {
-    if (key.escape) { onDone(undefined, { display: 'skip' }); return }
-    if (step === 0 || step === steps.length - 1) {
-      if (key.return) setStep(step + 1)
+  useInput((_input, key) => {
+    if (key.escape) {
+      onDone(undefined, { display: 'skip' })
       return
     }
-    const num = parseInt(input)
-    if (!isNaN(num) && num >= 1 && num <= steps[step].options!.length) {
-      setAnswers({ ...answers, [step]: num - 1 })
-      setStep(step + 1)
+    if (key.return) {
+      if (step < steps.length - 1) {
+        setStep(step + 1)
+      } else {
+        onDone('引导设置完成！', { display: 'skip' })
+      }
     }
   })
 
-  const current = steps[step]
   return (
     <Box flexDirection="column" padding={1}>
-      <Text bold>{current.title}</Text>
-      <Box marginTop={1}><Text>{current.content}</Text></Box>
-      {current.options && (
-        <Box marginTop={1} flexDirection="column">
-          {current.options.map((opt, i) => <Text key={i}>{i+1}. {opt}</Text>)}
-          <Text dimColor marginTop={1}>输入数字选择</Text>
-        </Box>
-      )}
-      {!current.options && <Text dimColor marginTop={1}>按 Enter 继续</Text>}
+      <Text bold>🚀 新手引导</Text>
+      <Box marginTop={1}>
+        <Text>{steps[step]}</Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>按 Enter 继续 | Esc 退出</Text>
+      </Box>
     </Box>
   )
 }
@@ -45,7 +37,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, _args) => {
 const onboarding = {
   type: 'local-jsx',
   name: 'onboarding',
-  description: '显示性能信息',
+  description: '运行新手引导',
   load: () => Promise.resolve({ call }),
 } satisfies Command
 

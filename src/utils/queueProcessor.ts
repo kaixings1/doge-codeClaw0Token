@@ -65,12 +65,13 @@ export function processQueueIfReady({
     return { processed: false }
   }
 
-  // Process ALL consecutive slash/bash commands in the queue to ensure
-  // multiple commands (e.g., from server/bridge) are executed sequentially.
+  // Slash commands and bash-mode commands are processed individually.
+  // Bash commands need per-command error isolation, exit codes, and progress UI.
   if (isSlashCommand(next) || next.mode === 'bash') {
     const cmd = dequeue(isMainThread)!
     void executeInput([cmd])
-
+  // Process ALL consecutive slash/bash commands in the queue to ensure
+  // multiple commands (e.g., from server/bridge) are executed sequentially.
     // After processing one, check if there are more slash/bash commands
     // and continue processing them by triggering a re-check.
     // This ensures multiple commands from server/bridge are executed sequentially.

@@ -15,6 +15,8 @@
 import { Bash } from '../../../tools/bash/index.js'
 import { exec } from '../../utils/Shell.js'
 import type { ShellCommand } from '../../utils/ShellCommand.js'
+import { createStreamingCommand } from '../../utils/Shell.js'; // 新增
+import { progressEmitter } from '../../tools/progressEmitter.js';       // 新增
 
 // ==================== 全局配置（新增，可测试） ====================
 
@@ -33,8 +35,6 @@ export interface ToolExecutorConfig {
   commandMappings?: Record<string, string>
   /** 备选 shell 列表，按优先级排列 */
   fallbackShells: Array<'bash' | 'powershell' | 'cmd'>
-  /** 是否启用调试日志 */
-  debug: boolean
 }
 
 /** 默认全局配置 */
@@ -57,14 +57,7 @@ export const toolExecutorConfig: ToolExecutorConfig = {
     // 可继续添加
   },
   fallbackShells: ['bash', 'powershell', 'cmd'],
-  debug: true, // 默认开启调试日志
-}
 
-// ==================== 调试日志函数 ====================
-function debugLog(...args: any[]): void {
-  if (toolExecutorConfig.debug) {
-    console.log('[ToolExecutor Debug]', new Date().toISOString(), ...args);
-  }
 }
 
 // ==================== 工具接口（保持原样） ====================
@@ -128,41 +121,11 @@ function validateCommand(command: string): void {
 }
 
 /**
- * 智能判断命令应该使用的 shell
- * 规则：
- * - 如果命令以 'cmd /c' 开头，优先用 cmd
- * - 如果命令包含 Windows 路径（如 C:\ 或 \），优先用 cmd
- * - 如果命令中有 PowerShell 特有语法（如 | select, Get-ChildItem），优先用 powershell
- * - 否则保持原回退顺序
- */
-function determineOptimalShell(command: string): 'bash' | 'powershell' | 'cmd' | null {
-  const lowerCmd = command.toLowerCase();
   
-  // 明确要求 cmd
-  if (lowerCmd.startsWith('cmd /c') || lowerCmd.startsWith('cmd.exe /c')) {
-    debugLog(`命令以 "cmd /c" 开头，选择 cmd shell`);
-    return 'cmd';
-  }
   
-  // Windows 路径特征
-  if (/^[a-z]:\\/i.test(command) || command.includes('\\') || command.includes(':\\')) {
-    debugLog(`检测到 Windows 路径，选择 cmd shell`);
-    return 'cmd';
-  }
   
-  // PowerShell 特有语法
-  if (/\b(Get-|Select-|Where-|ForEach-|Out-|Write-|Format-)\b/i.test(command) ||
-      command.includes('| select') || command.includes('| where') ||
-      command.includes('$') || command.includes('@(')) {
-    debugLog(`检测到 PowerShell 语法，选择 powershell shell`);
-    return 'powershell';
-  }
   
-  // 默认返回 null，表示使用配置的 fallbackShells 顺序
-  return null;
-}
 
-/**
  * 修复输出编码问题（针对 GBK 乱码场景）
  */
 function normalizeOutput(text: string): string {
@@ -179,14 +142,10 @@ function normalizeOutput(text: string): string {
     const hasReplacementChars = text.includes('\ufffd')
     if (hasReplacementChars && isWindows()) {
       try {
-        // 将当前字符串视为 binary 乱码，转回 buffer 后再用 utf8 解码
         const fixed = Buffer.from(text, 'binary').toString('utf8')
         // 只保留可打印字符
-        const cleaned = fixed.replace(/[^\x20-\x7E\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g, '')
-        debugLog(`编码自动修复: 原长度 ${text.length}, 修复后长度 ${cleaned.length}`);
-        return cleaned
-      } catch (e) {
-        debugLog(`编码自动修复失败: ${e}`);
+        return fixed.replace(/[^\x20-\x7E\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g, '')
+      } catch {
         return text
       }
     }
@@ -196,11 +155,8 @@ function normalizeOutput(text: string): string {
   // 指定 GBK 编码
   if (config.outputEncoding === 'gbk') {
     try {
-      const fixed = Buffer.from(text, 'binary').toString('utf8')
-      debugLog(`GBK 转 UTF-8 完成，原长度 ${text.length}`);
-      return fixed
-    } catch (e) {
-      debugLog(`GBK 转换失败: ${e}`);
+      return Buffer.from(text, 'binary').toString('utf8')
+    } catch {
       return text
     }
   }
@@ -252,7 +208,7 @@ function convertCommand(command: string, shell: 'bash' | 'powershell' | 'cmd'): 
 }
 
 /**
- * 带超时和回退的命令执行核心（增强版）
+ * 带超时和回退的命令执行核心
  */
 async function executeCommandWithFallback(
   command: string,
@@ -263,26 +219,15 @@ async function executeCommandWithFallback(
   const config = toolExecutorConfig
   let lastError: Error | undefined
   
-  // 智能选择最优 shell
-  const optimalShell = determineOptimalShell(command);
-  let shellsToTry: Array<'bash' | 'powershell' | 'cmd'>;
-  if (optimalShell) {
-    // 将最优 shell 放在第一位，其余按原顺序
-    shellsToTry = [optimalShell, ...config.fallbackShells.filter(s => s !== optimalShell)];
-    debugLog(`根据命令内容确定优先 shell: ${optimalShell}, 尝试顺序: ${shellsToTry.join(', ')}`);
-  } else {
-    shellsToTry = config.fallbackShells.slice();
-    debugLog(`未检测到特定 shell 需求，使用默认顺序: ${shellsToTry.join(', ')}`);
-  }
+  const shellsToTry = config.fallbackOnFailure
   
-  // 限制尝试次数
-  shellsToTry = shellsToTry.slice(0, config.maxFallbackAttempts);
+    ? config.fallbackShells.slice(0, config.maxFallbackAttempts)
+    : ['bash' as const]
   
   for (const shell of shellsToTry) {
     try {
       const finalCommand = shell === 'bash' ? command : convertCommand(command, shell)
-      debugLog(`[尝试 ${shell}] 原始命令: ${command}`);
-      debugLog(`[尝试 ${shell}] 转换后命令: ${finalCommand}`);
+      console.log(`[ToolExecutor] 尝试执行 (${shell}): ${finalCommand}`)
 
       const shellCmd: ShellCommand = await exec(
         finalCommand,
@@ -296,19 +241,17 @@ async function executeCommandWithFallback(
       )
 
       const result = await shellCmd.result
-      debugLog(`[尝试 ${shell}] 退出码: ${result.code}, stdout 长度: ${result.stdout?.length || 0}, stderr 长度: ${result.stderr?.length || 0}`);
 
-      // 检查是否需要回退（退出码非 0 且配置允许且还有下一个 shell）
+      // 检查是否需要回退（退出码非 0 且配置允许）
       if (result.code !== 0 && config.fallbackOnFailure && shellsToTry.length > 1) {
-        debugLog(`[尝试 ${shell}] 命令执行失败 (退出码 ${result.code})，尝试下一个 shell`);
-        lastError = new Error(result.stderr || `Exit code ${result.code}`);
+        console.warn(`[ToolExecutor] 命令执行失败 (退出码 ${result.code})，尝试下一个 shell`)
+        lastError = new Error(result.stderr || `Exit code ${result.code}`)
         continue
       }
 
       // 成功，规范化输出
       const stdout = normalizeOutput(result.stdout || '')
       const stderr = normalizeOutput(result.stderr || '')
-      debugLog(`[成功] 使用 shell: ${shell}, 最终 stdout 编码后长度: ${stdout.length}`);
       return {
         stdout,
         stderr,
@@ -316,7 +259,6 @@ async function executeCommandWithFallback(
         interrupted: result.interrupted,
       }
     } catch (error: any) {
-      debugLog(`[尝试 ${shell}] 执行异常:`, error.message);
       console.error(`[ToolExecutor] Shell ${shell} 执行异常:`, error.message)
       lastError = error
       // 继续尝试下一个 shell
@@ -366,7 +308,6 @@ export function parseToolCall(input: string): ToolCall | null {
  */
 export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   const startTime = Date.now()
-  debugLog(`执行工具: ${toolCall.tool}, 参数:`, toolCall.parameters);
 
   try {
     console.log(`[ToolExecutor] 执行工具: ${toolCall.tool}`)
@@ -393,7 +334,6 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   } catch (error: any) {
     const executionTime = Date.now() - startTime
     console.error(`[ToolExecutor] 工具 ${toolCall.tool} 执行失败:`, error.message)
-    debugLog(`工具执行失败: ${error.message}, 堆栈:`, error.stack);
 
     return {
       success: false,
@@ -412,7 +352,6 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
  */
 export async function handleToolCall(input: string): Promise<string> {
   console.log('[ToolExecutor] 收到工具调用请求')
-  debugLog(`原始输入: ${input.substring(0, 200)}${input.length > 200 ? '...' : ''}`);
 
   const toolCall = parseToolCall(input)
   if (!toolCall) {
@@ -489,7 +428,6 @@ async function executeExecTool(parameters: any): Promise<any> {
   validateCommand(command)
 
   console.log(`[ToolExecutor] 执行命令: ${command}`)
-  debugLog(`Exec 工具参数: timeout=${timeout}, background=${run_in_background}`);
 
   const abortController = new AbortController()
   const execResult = await executeCommandWithFallback(
@@ -519,7 +457,6 @@ async function executeClearTool(parameters: any): Promise<any> {
   const { clearMessages = true, clearCaches = true, clearHistory = false } = parameters
 
   console.log('[ToolExecutor] 执行清除操作')
-  debugLog(`Clear 工具参数: messages=${clearMessages}, caches=${clearCaches}, history=${clearHistory}`);
 
   return {
     action: 'clear',
@@ -537,34 +474,65 @@ async function executeClearTool(parameters: any): Promise<any> {
  * 执行 bash 工具 —— 与 exec 类似，语义更明确
  */
 async function executeBashTool(parameters: any): Promise<any> {
-  const { command, description, timeout = 30000 } = parameters
+  const { command, description, timeout = 30000, id } = parameters; // id 前端可传入唯一调用 ID
 
-  if (!command) {
-    throw new Error('bash 工具需要 command 参数')
-  }
+  if (!command) throw new Error('bash 工具需要 command 参数');
 
-  validateCommand(command)
+  validateCommand(command);
 
-  console.log(`[ToolExecutor] 执行 bash 命令: ${command}`)
-  debugLog(`Bash 工具参数: timeout=${timeout}`);
+  console.log(`[ToolExecutor] 执行 bash 命令（流式）: ${command}`);
 
-  const abortController = new AbortController()
-  const execResult = await executeCommandWithFallback(
-    command,
-    abortController.signal,
-    timeout,
-    false,   // bash 工具默认不后台运行
-  )
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    let fullOutput = '';
+    let stderrOutput = '';
 
-  return {
+    const shell = process.platform === 'win32' ? 'powershell' : 'bash'; // 简化选择
+    const child = createStreamingCommand(command, shell, {
+      env: { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
+    });
+
+    // 超时处理
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`命令超时 (${timeout}ms)`));
+    }, timeout);
+
+    child.onStdout((chunk) => {
+      fullOutput += chunk;
+      // 发射进度事件给 UI
+      progressEmitter.emitProgress(id || 'unknown', {
+        type: 'bash',
+        output: fullOutput,
+        elapsedSeconds: Math.round((Date.now() - startTime) / 1000),
+      });
+    });
+
+    child.onStderr((chunk) => {
+      stderrOutput += chunk;
+      // 也可以将 stderr 包含进进度显示
+      fullOutput += chunk;
+      progressEmitter.emitProgress(id || 'unknown', {
+        type: 'bash',
+        output: fullOutput,
+        elapsedSeconds: Math.round((Date.now() - startTime) / 1000),
+      });
+    });
+
+    child.onClose((code) => {
+      clearTimeout(timer);
+      const finalResult = {
     action: 'bash',
     command,
     description: description || '执行 bash 命令',
-    output: execResult.stdout,
-    error: execResult.stderr,
-    exitCode: execResult.code,
-    interrupted: execResult.interrupted,
-    status: execResult.code === 0 ? 'success' : 'failed',
+        output: fullOutput,
+        error: stderrOutput,
+        exitCode: code,
+        interrupted: code === null,
+        status: code === 0 ? 'success' : 'failed',
     platform: process.platform,
-  }
+      };
+      resolve(finalResult);
+    });
+  });
 }

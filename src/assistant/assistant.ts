@@ -111,7 +111,12 @@ const assistant: Command = {
 
 export default assistant
 
-export { NewInstallWizard, computeDefaultInstallDir } from './assistant.tsx'
-export { AssistantSessionChooser } from './AssistantSessionChooser.tsx'
+export const NewInstallWizard: React.FC<{
+  defaultDir: string;
+  onInstalled: (dir: string) => void;
+  onCancel: () => void;
+  onError: (message: string) => void;
+}> = (() => null);
+export const computeDefaultInstallDir: () => Promise<string> = (() => Promise.resolve(''));
 
 

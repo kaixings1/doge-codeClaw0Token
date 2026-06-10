@@ -1,6 +1,6 @@
 import { APIError } from '@anthropic-ai/sdk'
-// 引入调试日志工具（实际写入文件或控制台，取决于项目配置）
-import { logForDebugging } from "../../utils/debug.js"
+import { readFileSync } from 'node:fs'
+import { logForDebugging } from '../../utils/debug.js'
 
 import type {
   BetaMessage,
@@ -11,12 +11,11 @@ import type {
   BetaToolUnion,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type { AssistantMessage } from 'src/types/message.js'
 
-type AnyBlock = Record<string, unknown>
+type AnyBlock = Record<string, any>
 
 // OpenAI 兼容配置
-type OpenAICompatConfig = {
+export type OpenAICompatConfig = {
   apiKey: string
   baseURL: string
   headers?: Record<string, string>
@@ -24,7 +23,7 @@ type OpenAICompatConfig = {
 }
 
 // OpenAI 工具调用结构
-type OpenAIToolCall = {
+export type OpenAIToolCall = {
   id: string
   type: 'function'
   function: {
@@ -34,41 +33,13 @@ type OpenAIToolCall = {
 }
 
 // OpenAI 对话消息
-type OpenAIChatMessage = {
+export type OpenAIChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content?: string | null
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
 }
-// 添加在文件开头
-function isWSL(): boolean {
-		try {
-				const version = require('fs').readFileSync('/proc/version', 'utf8');
-				return version.toLowerCase().includes('microsoft');
-		} catch {
-				return false;
-		}
-}
 
-function mapCommandForPlatform(cmd: string): string {
-		if (!isWSL() && process.platform !== 'linux') return cmd;
-
-		const mappings: Record<string, string> = {
-				'move': 'mv',
-				'copy': 'cp',
-				'del': 'rm',
-				'rename': 'mv',
-				'type': 'cat',
-				'dir': 'ls -la'
-		};
-
-		for (const [winCmd, linuxCmd] of Object.entries(mappings)) {
-				if (cmd.trim().startsWith(winCmd)) {
-						return cmd.replace(winCmd, linuxCmd);
-				}
-		}
-		return cmd;
-}
 // 转换后的 OpenAI 请求体
 export type OpenAIChatRequest = {
   model: string
@@ -88,14 +59,21 @@ export type OpenAIChatRequest = {
 }
 
 // OpenAI 流式响应中的单个 chunk
-type OpenAIStreamChunk = {
+export type OpenAIStreamChunk = {
   id?: string
+  object?: string
   model?: string
   choices?: Array<{
     index?: number
+    message?: {
+      role?: 'assistant'
+      content?: string | null
+      tool_calls?: OpenAIToolCall[]
+    }
     delta?: {
       role?: 'assistant'
       content?: string | null
+      thinking?: string | null
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -115,20 +93,134 @@ type OpenAIStreamChunk = {
   }
 }
 
+type OpenAIToolStreamState = {
+  openAIIndex: number
+  anthropicIndex?: number
+  id: string
+  name: string
+  arguments: string
+  queuedArgumentDeltas: string[]
+  started: boolean
+  closed: boolean
+}
+
+type NativeBlockState =
+  | {
+      kind: 'text'
+      anthropicIndex: number
+      text: string
+    }
+  | {
+      kind: 'tool_use'
+      anthropicIndex: number
+      id: string
+      name: string
+      input: Record<string, unknown>
+      partialJson: string
+    }
+
 /**
- * 将 Anthropic 的消息内容（可能是字符串或内容块数组）转换为纯文本
+ * WSL 检测。
+ * 本文件使用 ESM，因此使用 node:fs，而不是 require('fs')。
+ */
+function isWSL(): boolean {
+  try {
+    return readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 将常见 Windows shell 命令映射为 Linux/WSL 命令。
+ * 仅处理命令行开头的命令词，避免误替换参数或文件名中的文本。
+ */
+function mapCommandForPlatform(command: string): string {
+  if (!isWSL() && process.platform !== 'linux') return command
+
+  const mappings: Record<string, string> = {
+    move: 'mv',
+    copy: 'cp',
+    del: 'rm',
+    rename: 'mv',
+    type: 'cat',
+    dir: 'ls -la',
+  }
+
+  for (const [windowsCommand, linuxCommand] of Object.entries(mappings)) {
+    const pattern = new RegExp(`^(\\s*)${windowsCommand}(?=\\s|$)`, 'i')
+    if (pattern.test(command)) {
+      return command.replace(pattern, `$1${linuxCommand}`)
+    }
+  }
+
+  return command
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {}
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // 统一在调用点记录日志，避免重复刷屏。
+  }
+
+  return {}
+}
+
+function createCompatAPIError(
+  status: number,
+  errorBody: object | undefined,
+  message: string,
+  headers: Headers,
+): APIError {
+  const APIErrorWithGenerate = APIError as typeof APIError & {
+    generate?: (
+      status: number | undefined,
+      errorResponse: object | undefined,
+      message: string | undefined,
+      headers: Headers | undefined,
+    ) => APIError
+  }
+
+  if (typeof APIErrorWithGenerate.generate === 'function') {
+    return APIErrorWithGenerate.generate(status, errorBody, message, headers)
+  }
+
+  return new APIError(status, errorBody, message, headers)
+}
+
+function buildChatCompletionsURL(rawBaseURL: string): string {
+  const baseURL = rawBaseURL.replace(/\/+$/, '')
+  return baseURL.endsWith('/v1')
+    ? `${baseURL}/chat/completions`
+    : `${baseURL}/v1/chat/completions`
+}
+
+ /* 将 Anthropic 的消息内容（可能是字符串或内容块数组）转换为纯文本
  * 用于构建 OpenAI 消息时需要提取的用户/助手文本
  */
 function contentToText(content: BetaMessageParam['content']): string {
   if (typeof content === 'string') return content
+
   return content
     .map(block => {
       if (block.type === 'text') return typeof block.text === 'string' ? block.text : ''
+
       if (block.type === 'tool_result') {
         return typeof block.content === 'string'
           ? block.content
           : JSON.stringify(block.content)
       }
+
       return ''
     })
     .filter(Boolean)
@@ -150,20 +242,23 @@ function toBlocks(content: BetaMessageParam['content']): AnyBlock[] {
  */
 function getToolDefinitions(tools?: BetaToolUnion[]): OpenAIChatRequest['tools'] {
   if (!tools || tools.length === 0) return undefined
+
   const mapped = tools.flatMap(tool => {
     const record = tool as unknown as Record<string, unknown>
     const name = typeof record.name === 'string' ? record.name : undefined
     if (!name) return []
+
     return [{
-      type: 'function' as const,
-      function: {
-        name,
-        description:
-          typeof record.description === 'string' ? record.description : undefined,
-        parameters: record.input_schema,
+        type: 'function' as const,
+        function: {
+          name,
+          description:
+            typeof record.description === 'string' ? record.description : undefined,
+          parameters: record.input_schema,
       },
     }]
   })
+
   return mapped.length > 0 ? mapped : undefined
 }
 
@@ -182,55 +277,74 @@ export function convertAnthropicRequestToOpenAI(input: {
 }): OpenAIChatRequest {
   logForDebugging('[openaiCompat] 开始将 Anthropic 请求转换为 OpenAI 格式', { level: 'debug' })
   // 支持通过环境变量覆盖模型名称
+
   const configuredModel = process.env.ANTHROPIC_MODEL?.trim()
   const targetModel = configuredModel || input.model
   logForDebugging(`[openaiCompat] 目标模型: ${targetModel} (原始: ${input.model}, 环境覆盖: ${configuredModel ?? '无'})`, { level: 'debug' })
   const messages: OpenAIChatMessage[] = []
 
-  // 处理 system prompt（可能是字符串或内容块数组）
+  logForDebugging(
+    `[openaiCompat] 目标模型: ${targetModel} (原始: ${input.model}, 环境覆盖: ${configuredModel ?? '无'})`,
+    { level: 'debug' },
+  )
+
   if (input.system) {
     const systemText = Array.isArray(input.system)
       ? input.system.map(block => block.text ?? '').join('\n')
       : input.system
+
     if (systemText) {
       messages.push({ role: 'system', content: systemText })
-      logForDebugging(`[openaiCompat] 添加 system 消息 (长度: ${systemText.length})`, { level: 'debug' })
+      logForDebugging(`[openaiCompat] 添加 system 消息 (长度: ${systemText.length})`, {
+        level: 'debug',
+      })
     }
   }
 
-  // 逐条转换消息
   for (const message of input.messages) {
     logForDebugging(`[openaiCompat] 处理消息 role=${message.role}`, { level: 'debug' })
+
     if (message.role === 'user') {
       const blocks = toBlocks(message.content)
-      // 提取 tool_result 块，转换为 OpenAI 的 tool 消息
       const toolResults = blocks.filter(block => block.type === 'tool_result')
+
       for (const result of toolResults) {
         const toolUseId =
-          typeof result.tool_use_id === 'string' ? result.tool_use_id : undefined
+          typeof result.tool_use_id === 'string'
+            ? result.tool_use_id
+            : `toolu_missing_${messages.length}`
         const content = result.content
+        const toolContent =
+          typeof content === 'string' ? content : JSON.stringify(content ?? '')
+
         messages.push({
           role: 'tool',
           tool_call_id: toolUseId,
-          content: typeof content === 'string' ? content : JSON.stringify(content),
+          content: toolContent,
         })
-        logForDebugging(`[openaiCompat] 添加 tool 消息 (tool_use_id=${toolUseId}, content长度=${typeof content === 'string' ? content.length : 'object'})`, { level: 'debug' })
+
+        logForDebugging(
+          `[openaiCompat] 添加 tool 消息 (tool_use_id=${toolUseId}, content长度=${toolContent.length})`,
+          { level: 'debug' },
+        )
       }
-      // 将剩余的非工具结果内容拼接为用户消息
+
       const text = contentToText(
         blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
       )
+
       if (text) {
         messages.push({ role: 'user', content: text })
-        logForDebugging(`[openaiCompat] 添加 user 消息 (长度: ${text.length})`, { level: 'debug' })
+        logForDebugging(`[openaiCompat] 添加 user 消息 (长度: ${text.length})`, {
+          level: 'debug',
+        })
       }
+
       continue
     }
 
     if (message.role === 'assistant') {
-      const blocks = Array.isArray(message.content)
-        ? (message.content as unknown as AnyBlock[])
-        : []
+      const blocks = toBlocks(message.content)
       const text = blocks
         .filter(block => block.type === 'text')
         .map(block => (typeof block.text === 'string' ? block.text : ''))
@@ -239,10 +353,10 @@ export function convertAnthropicRequestToOpenAI(input: {
       const toolCalls = blocks
         .filter(block => block.type === 'tool_use')
         .map(block => ({
-          id: String(block.id),
+          id: typeof block.id === 'string' ? block.id : `toolu_missing_${messages.length}`,
           type: 'function' as const,
           function: {
-            name: String(block.name),
+            name: typeof block.name === 'string' ? block.name : '',
             arguments:
               typeof block.input === 'string'
                 ? block.input
@@ -255,9 +369,15 @@ export function convertAnthropicRequestToOpenAI(input: {
         content: text || null,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       })
-      logForDebugging(`[openaiCompat] 添加 assistant 消息 (text长度=${text.length}, toolCalls数量=${toolCalls.length})`, { level: 'debug' })
+
+      logForDebugging(
+        `[openaiCompat] 添加 assistant 消息 (text长度=${text.length}, toolCalls数量=${toolCalls.length})`,
+        { level: 'debug' },
+      )
     }
   }
+
+  const toolDefinitions = getToolDefinitions(input.tools)
 
   const result: OpenAIChatRequest = {
     model: targetModel,
@@ -278,36 +398,38 @@ export function convertAnthropicRequestToOpenAI(input: {
         ? { tool_choice: 'auto' as const }
         : {}),
   }
+
   logForDebugging(`[openaiCompat] 转换完成: 模型: ${targetModel}，总消息数=${messages.length}, 工具数=${result.tools?.length ?? 0}`, { level: 'debug' })
+
   return result
 }
 
 /**
- * 向 OpenAI 兼容端点发起流式 POST 请求，返回可读流读取器
- * 内置了错误处理，对 429/529/5xx 抛出 APIError，以便上游进行重试
+ * 向 OpenAI 兼容端点发起流式 POST 请求。
  */
 export async function createOpenAICompatStream(
-  config: { apiKey: string; baseURL: string; headers?: Record<string, string>; fetch?: typeof fetch },
-  request: any,
+  config: OpenAICompatConfig,
+  request: OpenAIChatRequest,
   signal: AbortSignal,
 ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
-  const baseURL = config.baseURL.replace(/\/+$/, '')
-  const url = `${baseURL}/v1/chat/completions`
-  logForDebugging('[openaiCompat] 准备请求 URL: ' + url, { level: 'debug' })
-  logForDebugging(`[openaiCompat] 请求体: ${JSON.stringify({ ...request, stream: true })}`, { level: 'debug' })
-  const response = await (config.fetch ?? globalThis.fetch)(
-    url,
-    {
-      method: 'POST',
-      signal,
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
-        ...config.headers,
-      },
-      body: JSON.stringify({ ...request, stream: true }),
+  const url = buildChatCompletionsURL(config.baseURL)
+
+  logForDebugging(`[openaiCompat] 准备请求 URL: ${url}`, { level: 'debug' })
+  logForDebugging(
+    `[openaiCompat] 请求体: ${JSON.stringify({ ...request, stream: true })}`,
+    { level: 'debug' },
+  )
+
+  const response = await (config.fetch ?? globalThis.fetch)(url, {
+    method: 'POST',
+    signal,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${config.apiKey}`,
+      ...config.headers,
     },
-  );
+    body: JSON.stringify({ ...request, stream: true }),
+  })
 
   if (!response.ok || !response.body) {
     let responseText = ''
@@ -316,9 +438,16 @@ export async function createOpenAICompatStream(
     } catch {
       responseText = ''
     }
-    logForDebugging(`[openaiCompat] 响应错误: status=${response.status}, body=${responseText}`, { level: 'debug' })
 
-    // 对可重试的状态码（429/529/5xx）抛出 APIError，以便 withRetry 能识别并进行指数退避重试
+    logForDebugging(
+      `[openaiCompat] 响应错误: status=${response.status}, body=${responseText}`,
+      { level: 'debug' },
+    )
+
+    const message =
+      `OpenAI compat request failed with status ${response.status}` +
+      (responseText ? `: ${responseText}` : '')
+
     if (response.status === 429 || response.status === 529 || response.status >= 500) {
       let errorBody: object | undefined
       try {
@@ -326,27 +455,27 @@ export async function createOpenAICompatStream(
       } catch {
         errorBody = { message: responseText }
       }
-      const respHeaders = new Headers(response.headers as HeadersInit)
-      throw new APIError(
+
+      throw createCompatAPIError(
         response.status,
         errorBody,
-        'OpenAI compat request failed with status ' + response.status + (responseText ? ': ' + responseText : ''),
-        respHeaders,
+        message,
+        new Headers(response.headers as HeadersInit),
       )
     }
 
-    throw new Error(
-      `OpenAI compat request failed with status ${response.status}${responseText ? ': ' + responseText : ''}. 请确认服务端返回的是有效的 OpenAI 格式响应。`,
-    )
+    throw new Error(`${message}. 请确认服务端返回的是有效的 OpenAI 格式响应。`)
   }
 
-  logForDebugging(`[openaiCompat] 请求成功, 状态码=${response.status}, 准备读取流`, { level: 'debug' })
+  logForDebugging(`[openaiCompat] 请求成功, 状态码=${response.status}, 准备读取流`, {
+    level: 'debug',
+  })
+
   return response.body.getReader()
 }
 
 /**
- * 解析 SSE 流缓冲区，返回完整的事件数组和未完成的部分
- * 按双换行分隔，最后一个不完整的块存入 remainder
+ * 按 SSE 空行分割事件。
  */
 function parseSSEChunk(buffer: string): { events: string[]; remainder: string } {
   const normalized = buffer.replace(/\r\n/g, '\n')
@@ -356,21 +485,48 @@ function parseSSEChunk(buffer: string): { events: string[]; remainder: string } 
 }
 
 /**
- * 将 OpenAI 的 finish_reason 映射为 Anthropic 的 stop_reason
+ * 提取一个 SSE 事件中的 data 字段。
+ * 多个 data: 行必须用换行拼接后再解析。
+ */
+function getSSEData(rawEvent: string): string {
+  return rawEvent
+    .split('\n')
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trimStart())
+    .join('\n')
+}
+
+/**
+ * 将 OpenAI finish_reason 映射为 Anthropic stop_reason。
  */
 function mapFinishReason(reason: string | null | undefined): BetaMessage['stop_reason'] {
-  if (reason === 'tool_calls') return 'tool_use'
+  if (reason === 'tool_calls' || reason === 'function_call') return 'tool_use'
   if (reason === 'length') return 'max_tokens'
   return 'end_turn'
 }
+
 /**
- * 将 OpenAI 兼容的流式响应转换为 Anthropic 的 Stream 事件（BetaRawMessageStreamEvent）
- * 该异步生成器会不断 yield 事件，直到流结束并返回最终的 BetaMessage
- *
- * 处理逻辑：
- * 1. 如果 chunk 中包含 choices 字段，则按 OpenAI 格式解析 delta
- * 2. 如果没有 choices，视为原生 Anthropic 事件路径（已包含完整的 BetaRawMessageStreamEvent 字段）
- * 3. 自动合成缺失的 content_block_start / content_block_stop / message_delta
+ * 解析兼容服务错误事件。
+ */
+function throwNativeStreamError(event: Record<string, unknown>): never {
+  const rawError = event.error
+  const streamError =
+    rawError && typeof rawError === 'object'
+      ? (rawError as Record<string, unknown>)
+      : event
+  const errorType = typeof streamError.type === 'string' ? streamError.type : ''
+  const message =
+    typeof streamError.message === 'string'
+      ? streamError.message
+      : 'Anthropic-compatible stream returned an error event'
+
+  const status = errorType === 'rate_limit_error' ? 429 : errorType === 'overloaded_error' ? 529 : 500
+
+  throw createCompatAPIError(status, { error: streamError }, message, new Headers())
+}
+
+/**
+ * 将非流式响应转换成 Anthropic 事件和最终 Message。
  */
 function tryParseNonStreamingResponse(
   raw: string,
@@ -382,746 +538,1038 @@ function tryParseNonStreamingResponse(
   resultMessage: BetaMessage
 } | null {
   let parsed: Record<string, unknown>
+
   try {
     parsed = JSON.parse(raw) as Record<string, unknown>
   } catch {
     return null
   }
+
   if (!parsed || typeof parsed !== 'object') return null
 
-  // OpenAI 格式：{ id, choices: [{ message, finish_reason }], usage }
-  if (Array.isArray(parsed.choices) || (parsed.object === 'chat.completion')) {
+  // OpenAI 格式：{ choices: [{ message, finish_reason }], usage }
+  if (Array.isArray(parsed.choices) || parsed.object === 'chat.completion') {
     const choices = parsed.choices as Array<Record<string, unknown>> | undefined
     const choice = choices?.[0]
     const message = choice?.message as Record<string, unknown> | undefined
     const finishReason = choice?.finish_reason as string | null | undefined
     const usage = parsed.usage as Record<string, unknown> | undefined
-    const promptTokens = (usage?.prompt_tokens as number) ?? 0
-    const completionTokens = (usage?.completion_tokens as number) ?? 0
+    const promptTokens = typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : 0
+    const completionTokens =
+      typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : 0
     const events: BetaRawMessageStreamEvent[] = []
-    let nextIdx = 0
+    const finalContent: AnyBlock[] = []
+    let nextIndex = 0
 
     events.push({
       type: 'message_start',
       message: {
-        id: (parsed.id as string) ?? 'openai-compat',
+        id: typeof parsed.id === 'string' ? parsed.id : 'openai-compat',
         type: 'message',
-        role: 'assistant', model,
+        role: 'assistant',
+        model,
         content: [],
-        stop_reason: null, stop_sequence: null,
+        stop_reason: null,
+        stop_sequence: null,
         usage: { input_tokens: promptTokens, output_tokens: 0 },
-      } as any,
-    })
+      },
+    } as BetaRawMessageStreamEvent)
 
-    const content = message?.content as string | undefined
-    const toolCalls = message?.tool_calls as Array<Record<string, unknown>> | undefined
-
-    if (content && content.length > 0) {
-      const textIdx = nextIdx++
-      events.push({ type: 'content_block_start', index: textIdx, content_block: { type: 'text', text: '' } } as any)
-      events.push({ type: 'content_block_delta', index: textIdx, delta: { type: 'text_delta', text: content } } as any)
-      events.push({ type: 'content_block_stop', index: textIdx } as any)
+    const content = typeof message?.content === 'string' ? message.content : ''
+    if (content) {
+      const index = nextIndex++
+      finalContent.push({ type: 'text', text: content })
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'text', text: '' },
+      } as BetaRawMessageStreamEvent)
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'text_delta', text: content },
+      } as BetaRawMessageStreamEvent)
+      events.push({ type: 'content_block_stop', index } as BetaRawMessageStreamEvent)
     }
 
-    if (toolCalls) {
-      for (const tc of toolCalls) {
-        const idx = nextIdx++
-        const fn = tc.function as Record<string, unknown> | undefined
-        const rawInput = (fn?.arguments as string) ?? '{}'
-        events.push({
-          type: 'content_block_start', index: idx,
-          content_block: { type: 'tool_use', id: (tc.id as string) ?? `toolu_${idx}`, name: (fn?.name as string) ?? '', input: '' },
-        } as any)
-        events.push({ type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: rawInput } } as any)
-        events.push({ type: 'content_block_stop', index: idx } as any)
-      }
+    const toolCalls = Array.isArray(message?.tool_calls)
+      ? (message.tool_calls as Array<Record<string, unknown>>)
+      : []
+
+    for (const toolCall of toolCalls) {
+      const index = nextIndex++
+      const fn =
+        toolCall.function && typeof toolCall.function === 'object'
+          ? (toolCall.function as Record<string, unknown>)
+          : {}
+      const argumentsJson = typeof fn.arguments === 'string' ? fn.arguments : '{}'
+      const input = parseJsonObject(argumentsJson)
+      const id = typeof toolCall.id === 'string' ? toolCall.id : `toolu_${index}`
+      const name = typeof fn.name === 'string' ? fn.name : ''
+
+      finalContent.push({ type: 'tool_use', id, name, input })
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'tool_use', id, name, input: {} },
+      } as BetaRawMessageStreamEvent)
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'input_json_delta', partial_json: argumentsJson },
+      } as BetaRawMessageStreamEvent)
+      events.push({ type: 'content_block_stop', index } as BetaRawMessageStreamEvent)
     }
 
+    const stopReason = mapFinishReason(finishReason ?? 'stop')
     events.push({
       type: 'message_delta',
-      delta: { stop_reason: mapFinishReason(finishReason ?? 'stop'), stop_sequence: null },
+      delta: { stop_reason: stopReason, stop_sequence: null },
       usage: { output_tokens: completionTokens },
-    } as any)
+    } as BetaRawMessageStreamEvent)
 
     return {
-      promptTokens, completionTokens, events,
+      promptTokens,
+      completionTokens,
+      events,
       resultMessage: {
-        id: (parsed.id as string) ?? 'openai-compat', type: 'message', role: 'assistant', model,
-        content: [] as any,
-        stop_reason: mapFinishReason(finishReason ?? 'stop'), stop_sequence: null,
+        id: typeof parsed.id === 'string' ? parsed.id : 'openai-compat',
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: finalContent as any,
+        stop_reason: stopReason,
+        stop_sequence: null,
         usage: { input_tokens: promptTokens, output_tokens: completionTokens },
       } as BetaMessage,
     }
   }
 
-  // Anthropic 原生格式：{ type: 'message', content: [...] }
-  if ((parsed.type as string) === 'message' && Array.isArray(parsed.content)) {
+  // Anthropic 原生非流式格式。
+  if (parsed.type === 'message' && Array.isArray(parsed.content)) {
     const blocks = parsed.content as Array<Record<string, unknown>>
     const usage = parsed.usage as Record<string, unknown> | undefined
-    const stopReason = parsed.stop_reason as string | null | undefined
-    const promptTokens = (usage?.input_tokens as number) ?? 0
-    const completionTokens = (usage?.output_tokens as number) ?? 0
+    const stopReason = parsed.stop_reason as BetaMessage['stop_reason']
+    const promptTokens = typeof usage?.input_tokens === 'number' ? usage.input_tokens : 0
+    const completionTokens = typeof usage?.output_tokens === 'number' ? usage.output_tokens : 0
     const events: BetaRawMessageStreamEvent[] = []
-    let idx = 0
 
     events.push({
       type: 'message_start',
       message: {
-        id: (parsed.id as string) ?? 'anthropic-native', type: 'message', role: 'assistant', model,
-        content: [], stop_reason: null, stop_sequence: null,
+        id: typeof parsed.id === 'string' ? parsed.id : 'anthropic-native',
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
         usage: { input_tokens: promptTokens, output_tokens: 0 },
-      } as any,
-    })
+      },
+    } as BetaRawMessageStreamEvent)
 
-    for (const block of blocks) {
-      const bt = block.type as string
-      if (bt === 'text') {
-        events.push({ type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } } as any)
-        events.push({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: block.text as string } } as any)
-        events.push({ type: 'content_block_stop', index: idx } as any)
-      } else if (bt === 'tool_use') {
-        const inputStr = typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? {})
-        events.push({ type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id as string, name: block.name as string, input: '' } } as any)
-        events.push({ type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: inputStr } } as any)
-        events.push({ type: 'content_block_stop', index: idx } as any)
-      } else if (bt === 'thinking') {
-        events.push({ type: 'content_block_start', index: idx, content_block: { type: 'thinking', thinking: '', signature: '' } } as any)
-        events.push({ type: 'content_block_delta', index: idx, delta: { type: 'thinking_delta', thinking: block.thinking as string } } as any)
-        if (block.signature) {
-          events.push({ type: 'content_block_delta', index: idx, delta: { type: 'signature_delta', signature: block.signature as string } } as any)
+    blocks.forEach((block, index) => {
+      if (block.type === 'text') {
+        const text = typeof block.text === 'string' ? block.text : ''
+        events.push({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'text', text: '' },
+        } as BetaRawMessageStreamEvent)
+        if (text) {
+          events.push({
+            type: 'content_block_delta',
+            index,
+            delta: { type: 'text_delta', text },
+          } as BetaRawMessageStreamEvent)
         }
-        events.push({ type: 'content_block_stop', index: idx } as any)
+        events.push({ type: 'content_block_stop', index } as BetaRawMessageStreamEvent)
+        return
       }
-      idx++
-    }
+
+      if (block.type === 'tool_use') {
+        const input =
+          block.input && typeof block.input === 'object' && !Array.isArray(block.input)
+            ? (block.input as Record<string, unknown>)
+            : {}
+        const partialJson = JSON.stringify(input)
+        events.push({
+          type: 'content_block_start',
+          index,
+          content_block: {
+            type: 'tool_use',
+            id: typeof block.id === 'string' ? block.id : `toolu_${index}`,
+            name: typeof block.name === 'string' ? block.name : '',
+            input: {},
+          },
+        } as BetaRawMessageStreamEvent)
+        events.push({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'input_json_delta', partial_json: partialJson },
+        } as BetaRawMessageStreamEvent)
+        events.push({ type: 'content_block_stop', index } as BetaRawMessageStreamEvent)
+        return
+      }
+
+      // 对未知块保守透传，避免未来新增块导致崩溃。
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: block,
+      } as BetaRawMessageStreamEvent)
+      events.push({ type: 'content_block_stop', index } as BetaRawMessageStreamEvent)
+    })
 
     events.push({
       type: 'message_delta',
       delta: { stop_reason: stopReason ?? 'end_turn', stop_sequence: null },
       usage: { output_tokens: completionTokens },
-    } as any)
+    } as BetaRawMessageStreamEvent)
 
-    return { promptTokens, completionTokens, events, resultMessage: parsed as unknown as BetaMessage }
+    return {
+      promptTokens,
+      completionTokens,
+      events,
+      resultMessage: parsed as unknown as BetaMessage,
+    }
   }
 
   return null
 }
 
+/**
+ * 将 OpenAI 兼容 SSE 流转换为 Anthropic BetaRawMessageStreamEvent。
+ *
+ * 支持：
+ * 1. OpenAI Chat Completions SSE；
+ * 2. OpenAI 非流式 JSON 回退；
+ * 3. Anthropic 原生 SSE 透传与累积；
+ * 4. 文本形式工具调用的兼容提取。
+ */
 export async function* createAnthropicStreamFromOpenAI(input: {
   reader: ReadableStreamDefaultReader<Uint8Array>
   model: string
 }): AsyncGenerator<BetaRawMessageStreamEvent, BetaMessage, void> {
   const decoder = new TextDecoder()
   let buffer = ''
+  let reachedEOF = false
   let started = false
+  let streamMode: 'unknown' | 'openai' | 'anthropic' = 'unknown'
   let nextContentIndex = 0
   let promptTokens = 0
   let completionTokens = 0
   let responseBytes = 0
- 
-  const toolExtractor = new ToolCallExtractor({ enableBashCodeBlock: true }) 
-  const collectedToolCalls: ToolCall[] = []
-  let collectedText = ''  
- 
-  const nativeIdxMap = new Map<number, number>()
-  const nativeBlockType = new Map<number, 'text' | 'tool_use'>()
-  const nativeToolUseInfo = new Map<number, { id: string; name: string }>()
+  let openAIStopReason: BetaMessage['stop_reason'] | null = null
+  let nativeStopReason: BetaMessage['stop_reason'] | null = null
   let nativeMessageDeltaSent = false
- 
-  let activeBlockType: 'text' | null = null
-  let activeBlockIndex: number | null = null
-  const toolIdxMap = new Map<number, number>()
-  const toolState = new Map<number, { id: string; name: string; arguments: string }>()
+  let messageId = 'openai-compat'
 
-  logForDebugging(`[openaiCompat] 开始将 OpenAI 流转换为 Anthropic 事件, model=${input.model}`, { level: 'debug' })
+  const finalBlocks = new Map<number, AnyBlock>()
 
-  async function* closeActiveBlock() {
-    if (activeBlockType && activeBlockIndex !== null) {
-      yield { type: 'content_block_stop', index: activeBlockIndex } as BetaRawMessageStreamEvent
-      activeBlockType = null
-      activeBlockIndex = null
+  const toolExtractor = new ToolCallExtractor({
+    // 默认关闭，避免把模型正常展示的 bash 示例误当成真实工具调用。
+    // 如确实依赖旧模型输出 bash 代码块触发执行，可显式开启环境变量。
+    enableBashCodeBlock: process.env.OPENAI_COMPAT_EXTRACT_BASH_CODE_BLOCK === 'true',
+    enableBareCommandLine: process.env.OPENAI_COMPAT_EXTRACT_BARE_COMMAND === 'true',
+  })
+
+  let activeTextIndex: number | null = null
+  const openAIToolStates = new Map<number, OpenAIToolStreamState>()
+
+  const nativeIndexMap = new Map<number, number>()
+  const nativeOpenBlocks = new Set<number>()
+  const nativeBlockStates = new Map<number, NativeBlockState>()
+
+  logForDebugging(`[openaiCompat] 开始转换响应流, model=${input.model}`, {
+    level: 'debug',
+  })
+
+  function appendFinalText(index: number, text: string): void {
+    const block = finalBlocks.get(index)
+    if (block?.type === 'text') {
+      block.text = String(block.text ?? '') + text
+      return
     }
+
+    finalBlocks.set(index, { type: 'text', text })
   }
 
-  async function* closeAllNativeBlocks() {
-    for (const [idx] of nativeBlockType) {
-      logForDebugging(`[openaiCompat] 关闭原生块 index=${idx}`, { level: 'debug' })
-      yield { type: 'content_block_stop', index: idx } as BetaRawMessageStreamEvent
-    }
-    nativeBlockType.clear()
-    nativeIdxMap.clear()
+  function buildFinalContent(): AnyBlock[] {
+    return [...finalBlocks.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, block]) => block)
   }
- 
-  function createAssistantMessageFromToolCalls(): AssistantMessage | null {
-    if (collectedToolCalls.length === 0) return null;
-    logForDebugging(`[openaiCompat] 产出 AssistantMessage，包含 ${collectedToolCalls.length} 个工具调用`, { level: 'debug' });
-    return {
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        content: collectedToolCalls.map(tc => ({
-          type: 'tool_use',
-          id: tc.id,
-          name: tc.function.name,
-          input: JSON.parse(tc.function.arguments),
-        })),
-        usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+
+  async function* closeActiveTextBlock(): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    if (activeTextIndex === null) return
+
+    yield {
+      type: 'content_block_stop',
+      index: activeTextIndex,
+    } as BetaRawMessageStreamEvent
+
+    activeTextIndex = null
+  }
+
+  async function* emitText(text: string): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    if (!text) return
+
+    if (activeTextIndex === null) {
+      activeTextIndex = nextContentIndex++
+      finalBlocks.set(activeTextIndex, { type: 'text', text: '' })
+
+      yield {
+        type: 'content_block_start',
+        index: activeTextIndex,
+        content_block: { type: 'text', text: '' },
+      } as BetaRawMessageStreamEvent
+    }
+
+    appendFinalText(activeTextIndex, text)
+
+    yield {
+      type: 'content_block_delta',
+      index: activeTextIndex,
+      delta: { type: 'text_delta', text },
+    } as BetaRawMessageStreamEvent
+  }
+
+  async function* emitSyntheticToolCall(
+    toolCall: ToolCall,
+  ): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    yield* closeActiveTextBlock()
+
+    const index = nextContentIndex++
+    const parsedInput = parseJsonObject(toolCall.function.arguments)
+
+    if (toolCall.function.arguments.trim() && Object.keys(parsedInput).length === 0) {
+      logForDebugging(
+        `[openaiCompat] 文本工具调用参数无法解析为 JSON 对象: name=${toolCall.function.name}, args=${toolCall.function.arguments.slice(0, 300)}`,
+        { level: 'debug' },
+      )
+    }
+
+    finalBlocks.set(index, {
+      type: 'tool_use',
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input: parsedInput,
+    })
+
+    yield {
+      type: 'content_block_start',
+      index,
+      content_block: {
+        type: 'tool_use',
+        id: toolCall.id,
+        name: toolCall.function.name,
+        input: {},
       },
-      uuid: crypto.randomUUID(),
-      parentUuid: undefined,
-      source: 'api',
-    } as AssistantMessage;
-  }
-  logForDebugging('[openaiCompat] 开始将 OpenAI 流转换为 Anthropic 事件', { level: 'debug' })
+    } as BetaRawMessageStreamEvent
 
-  while (true) {
-    const { done, value } = await input.reader.read()
-    if (done) {
-      logForDebugging(`[openaiCompat] 流读取完成, 总响应字节数=${responseBytes}`, { level: 'debug' })
-      break
+    if (toolCall.function.arguments) {
+      yield {
+        type: 'content_block_delta',
+        index,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: toolCall.function.arguments,
+        },
+      } as BetaRawMessageStreamEvent
     }
-    if (value?.byteLength) responseBytes += value.byteLength
-    buffer += decoder.decode(value, { stream: true })
+
+    yield { type: 'content_block_stop', index } as BetaRawMessageStreamEvent
+  }
+
+  async function* emitExtractorResult(
+    result: ExtractResult,
+  ): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    if (result.text) {
+      yield* emitText(result.text)
+    }
+
+    for (const toolCall of result.toolCalls) {
+      yield* emitSyntheticToolCall(toolCall)
+    }
+  }
+
+  function appendToolName(state: OpenAIToolStreamState, namePart: string | undefined): void {
+    if (!namePart) return
+    if (!state.name) {
+      state.name = namePart
+      return
+    }
+    if (state.name === namePart || state.name.endsWith(namePart)) return
+    state.name += namePart
+  }
+
+  async function* ensureOpenAIToolStarted(
+    state: OpenAIToolStreamState,
+    force = false,
+  ): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    if (state.started) return
+    if (!force && !state.name) return
+
+    yield* closeActiveTextBlock()
+
+    const index = nextContentIndex++
+    state.anthropicIndex = index
+    state.started = true
+
+    finalBlocks.set(index, {
+      type: 'tool_use',
+      id: state.id,
+      name: state.name,
+      input: {},
+    })
+
+    yield {
+      type: 'content_block_start',
+      index,
+      content_block: {
+        type: 'tool_use',
+        id: state.id,
+        name: state.name,
+        input: {},
+      },
+    } as BetaRawMessageStreamEvent
+
+    for (const partialJson of state.queuedArgumentDeltas) {
+      yield {
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'input_json_delta', partial_json: partialJson },
+      } as BetaRawMessageStreamEvent
+    }
+
+    state.queuedArgumentDeltas = []
+  }
+
+  async function* closeOpenAIToolState(
+    state: OpenAIToolStreamState,
+  ): AsyncGenerator<BetaRawMessageStreamEvent, void, void> {
+    if (state.closed) return
+
+    yield* ensureOpenAIToolStarted(state, true)
+
+    if (state.anthropicIndex === undefined) return
+
+    const inputObject = parseJsonObject(state.arguments)
+    if (state.arguments.trim() && Object.keys(inputObject).length === 0) {
+      logForDebugging(
+        `[openaiCompat] OpenAI 原生工具参数无法解析为 JSON 对象: name=${state.name}, args=${state.arguments.slice(0, 300)}`,
+        { level: 'debug' },
+      )
+    }
+
+    finalBlocks.set(state.anthropicIndex, {
+      type: 'tool_use',
+      id: state.id,
+      name: state.name,
+      input: inputObject,
+    })
+
+    yield {
+      type: 'content_block_stop',
+      index: state.anthropicIndex,
+    } as BetaRawMessageStreamEvent
+
+    state.closed = true
+  }
+
+  async function* closeAllOpenAIToolStates(): AsyncGenerator<
+    BetaRawMessageStreamEvent,
+    void,
+    void
+  > {
+    for (const state of [...openAIToolStates.values()].sort(
+      (left, right) => left.openAIIndex - right.openAIIndex,
+    )) {
+      yield* closeOpenAIToolState(state)
+    }
+  }
+
+  async function* finalizeOpenAIStream(): AsyncGenerator<
+    BetaRawMessageStreamEvent,
+    BetaMessage,
+    void
+  > {
+    if (!started) {
+      throw new Error(`[openaiCompat] 未收到 message_start 事件，模型: ${input.model}`)
+    }
+
+    const flushResult = toolExtractor.flush()
+    yield* emitExtractorResult(flushResult)
+    yield* closeActiveTextBlock()
+    yield* closeAllOpenAIToolStates()
+
+    const finalContent = buildFinalContent()
+    const containsTools = finalContent.some(block => block.type === 'tool_use')
+    const stopReason = openAIStopReason ?? (containsTools ? 'tool_use' : 'end_turn')
+
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage: { output_tokens: completionTokens },
+    } as BetaRawMessageStreamEvent
+
+    yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+
+    _lastResponseBytes = responseBytes
+
+    logForDebugging(
+      `[openaiCompat] OpenAI 流结束: input=${promptTokens}, output=${completionTokens}, bytes=${responseBytes}`,
+      { level: 'debug' },
+    )
+
+    return {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: input.model,
+      content: finalContent as any,
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+    } as BetaMessage
+  }
+
+  async function* closeAllNativeBlocks(): AsyncGenerator<
+    BetaRawMessageStreamEvent,
+    void,
+    void
+  > {
+    for (const anthropicIndex of [...nativeOpenBlocks].sort((left, right) => left - right)) {
+      const state = nativeBlockStates.get(anthropicIndex)
+      if (state?.kind === 'tool_use') {
+        const parsedInput = state.partialJson
+          ? parseJsonObject(state.partialJson)
+          : state.input
+        finalBlocks.set(anthropicIndex, {
+          type: 'tool_use',
+          id: state.id,
+          name: state.name,
+          input: parsedInput,
+        })
+      }
+
+      yield { type: 'content_block_stop', index: anthropicIndex } as BetaRawMessageStreamEvent
+    }
+
+    nativeOpenBlocks.clear()
+    nativeIndexMap.clear()
+  }
+
+  async function* finalizeNativeStream(): AsyncGenerator<
+    BetaRawMessageStreamEvent,
+    BetaMessage,
+    void
+  > {
+    yield* closeAllNativeBlocks()
+
+    const stopReason = nativeStopReason ?? 'end_turn'
+
+    if (!nativeMessageDeltaSent) {
+      yield {
+        type: 'message_delta',
+        delta: { stop_reason: stopReason, stop_sequence: null },
+        usage: { output_tokens: completionTokens },
+      } as BetaRawMessageStreamEvent
+    }
+
+    yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+
+    _lastResponseBytes = responseBytes
+
+    return {
+      id: messageId || 'anthropic-native',
+      type: 'message',
+      role: 'assistant',
+      model: input.model,
+      content: buildFinalContent() as any,
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+    } as BetaMessage
+  }
+
+  while (!reachedEOF) {
+    const { done, value } = await input.reader.read()
+
+    if (done) {
+      buffer += decoder.decode()
+      reachedEOF = true
+    } else {
+      if (value?.byteLength) responseBytes += value.byteLength
+      buffer += decoder.decode(value, { stream: true })
+    }
+
     const sse = parseSSEChunk(buffer)
     buffer = sse.remainder
+    const rawEvents = [...sse.events]
 
-    for (const rawEvent of sse.events) {
-      const dataLines = rawEvent
-        .split('\n')
-        .filter(line => line.startsWith('data:'))
-        .map(line => line.slice(5).trim())
+    // 某些服务最后一个 SSE 事件没有双换行，EOF 时补处理。
+    if (reachedEOF && buffer.trimStart().startsWith('data:')) {
+      rawEvents.push(buffer)
+      buffer = ''
+    }
 
-      for (const data of dataLines) {
-        if (!data || data === '[DONE]') {
-          if (data === '[DONE]') {
-            logForDebugging('[openaiCompat] 收到 [DONE] 事件，开始收尾', { level: 'debug' })
-            // 提取剩余的缓冲区内容
-            const flushResult = toolExtractor.flush()
-            if (flushResult.text) {
-              collectedText += flushResult.text
-              if (activeBlockType !== 'text') {
-                yield* closeActiveBlock()
-                activeBlockIndex = nextContentIndex++
-                yield { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } }
-                activeBlockType = 'text'
-              }
-              yield { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: flushResult.text } }
-            }
-            for (const tc of flushResult.toolCalls) {
-              collectedToolCalls.push(tc)  // 收集工具调用
-              yield* closeActiveBlock()
-              const idx = nextContentIndex++
-              let input: any
-              try { input = JSON.parse(tc.function.arguments) } catch { input = {} }
-              yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: tc.id, name: tc.function.name, input: '' } }
-              yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } }
-              yield { type: 'content_block_stop', index: idx }
-            }
-            // 关闭原有工具块
-            await closeActiveBlock()
-            for (const ai of toolIdxMap.values()) {
-              logForDebugging(`[openaiCompat] 关闭工具块 index=${ai}`, { level: 'debug' })
-              yield { type: 'content_block_stop', index: ai } as BetaRawMessageStreamEvent
-            }
-            if (!nativeMessageDeltaSent && started) {
-              logForDebugging('[openaiCompat] 发送 message_delta (end_turn)', { level: 'debug' })
-              yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: completionTokens } } as BetaRawMessageStreamEvent
-            }
-            // 不再产出自定义 assistant 事件
-            yield { type: 'message_stop' } as BetaRawMessageStreamEvent
-            _lastResponseBytes = responseBytes
-            logForDebugging(`[openaiCompat] 流结束, 最终 token 用量: input=${promptTokens}, output=${completionTokens}, 字节=${responseBytes}`, { level: 'debug' })
+    for (const rawEvent of rawEvents) {
+      const data = getSSEData(rawEvent)
+      if (!data) continue
 
-            // ========== 关键修复：构建包含工具调用的 content ==========
-            const finalContent: any[] = []
-            if (collectedText) {
-              finalContent.push({ type: 'text', text: collectedText })
-            }
-            for (const tc of collectedToolCalls) {
-              let inputObj: any
-              try { inputObj = JSON.parse(tc.function.arguments) } catch { inputObj = {} }
-              finalContent.push({
-                type: 'tool_use',
-                id: tc.id,
-                name: tc.function.name,
-                input: inputObj,
-              })
-            }
-						for (const block of finalContent) {
-								if (block.type === 'tool_use') {
-										const idx = nextContentIndex++;
-										yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id, name: block.name, input: '' } } as any;
-										const inputStr = JSON.stringify(block.input);
-										yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: inputStr } } as any;
-										yield { type: 'content_block_stop', index: idx } as any;
-								} else if (block.type === 'text') {
-										// 如果还有文本块，也可以输出，但通常工具调用时文本已经处理过
-								}
-						}
-						
-						 // ========== 关键添加：将工具调用作为 AssistantMessage 发送 ==========
-						const toolUseBlocks = finalContent.filter(block => block.type === 'tool_use');
-						if (toolUseBlocks.length > 0) {
-								const assistantMsg = {
-										type: 'assistant',
-										message: {
-												role: 'assistant',
-												content: toolUseBlocks,
-												usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-										},
-										uuid: crypto.randomUUID(),
-										parentUuid: undefined,
-										source: 'api'
-								};
-								yield assistantMsg as any;
-						}
-            const finalMessage: BetaMessage = {
-              id: 'openai-compat',
-              type: 'message',
-              role: 'assistant',
-              model: input.model,
-              content: finalContent,
-              stop_reason: 'tool_use',
-              stop_sequence: null,
-              usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-            } as BetaMessage
-            return finalMessage
+      if (data === '[DONE]') {
+        logForDebugging('[openaiCompat] 收到 [DONE]', { level: 'debug' })
+
+        if (streamMode === 'anthropic') {
+          return yield* finalizeNativeStream()
+        }
+
+        return yield* finalizeOpenAIStream()
+      }
+
+      let event: Record<string, unknown>
+      try {
+        event = JSON.parse(data) as Record<string, unknown>
+      } catch {
+        logForDebugging(`[openaiCompat] 无法解析 SSE data: ${data.slice(0, 300)}`, {
+          level: 'debug',
+        })
+        continue
+      }
+
+      logForDebugging(`[openaiCompat] 收到事件: ${JSON.stringify(event).slice(0, 500)}`, {
+        level: 'debug',
+      })
+
+      // OpenAI include_usage 最后的 chunk 可以是 choices: []。
+      if (Array.isArray(event.choices) && event.choices.length === 0) {
+        const usage = event.usage as Record<string, unknown> | undefined
+        if (typeof usage?.prompt_tokens === 'number') promptTokens = usage.prompt_tokens
+        if (typeof usage?.completion_tokens === 'number') {
+          completionTokens = usage.completion_tokens
+        }
+        continue
+      }
+
+      const hasChoices = Array.isArray(event.choices) && event.choices.length > 0
+
+      // ===============================
+      // Anthropic 原生 SSE 路径
+      // ===============================
+      if (!hasChoices) {
+        const eventType = typeof event.type === 'string' ? event.type : ''
+        if (!eventType) continue
+
+        streamMode = 'anthropic'
+
+        switch (eventType) {
+          case 'ping': {
+            yield event as unknown as BetaRawMessageStreamEvent
+            break
           }
-          continue
-        }
 
-        let event: Record<string, unknown>
-        try {
-          event = JSON.parse(data) as Record<string, unknown>
-        } catch (e) {
-          logForDebugging(`[openaiCompat] 无法解析事件数据: ${data.slice(0, 200)}`, { level: 'debug' })
-          continue
-        }
-        if (!event || typeof event !== 'object') continue
-        logForDebugging(`[openaiCompat] 收到事件: ${JSON.stringify(event).slice(0, 500)}`, { level: 'debug' })
+          case 'error': {
+            throwNativeStreamError(event)
+          }
 
-        const hasChoices = Array.isArray(event.choices) && event.choices.length > 0
+          case 'message_start': {
+            started = true
+            const originalMessage =
+              event.message && typeof event.message === 'object'
+                ? ({ ...(event.message as Record<string, unknown>) } as Record<string, unknown>)
+                : {}
+            const usage =
+              originalMessage.usage && typeof originalMessage.usage === 'object'
+                ? (originalMessage.usage as Record<string, unknown>)
+                : undefined
 
-        // ===============================
-        // 原生 Anthropic 事件路径（无 choices 字段）
-        // ===============================
-        if (!hasChoices) {
-          const evType = event.type as string
-          if (!evType) continue
-          switch (evType) {
-            case 'message_start': {
-              started = true
-              const msg = event.message as Record<string, unknown>
-              if (msg && !msg.model) msg.model = input.model
-              const u = event.usage as Record<string, unknown>
-              if (u?.input_tokens) promptTokens = u.input_tokens as number
-              yield { type: 'message_start', message: msg ?? { id: 'anthropic-native', type: 'message', role: 'assistant', model: input.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } }
+            if (typeof originalMessage.id === 'string') messageId = originalMessage.id
+            if (typeof usage?.input_tokens === 'number') promptTokens = usage.input_tokens
+
+            originalMessage.id = messageId || 'anthropic-native'
+            originalMessage.type = 'message'
+            originalMessage.role = 'assistant'
+            originalMessage.model = originalMessage.model || input.model
+            originalMessage.content = []
+            originalMessage.stop_reason = null
+            originalMessage.stop_sequence = null
+            originalMessage.usage = {
+              input_tokens: promptTokens,
+              output_tokens: 0,
+            }
+
+            yield {
+              type: 'message_start',
+              message: originalMessage,
+            } as BetaRawMessageStreamEvent
+            break
+          }
+
+          case 'content_block_start': {
+            const upstreamIndex = Number(event.index) || 0
+            let anthropicIndex = nativeIndexMap.get(upstreamIndex)
+            if (anthropicIndex === undefined) {
+              anthropicIndex = nextContentIndex++
+              nativeIndexMap.set(upstreamIndex, anthropicIndex)
+            }
+
+            const block =
+              event.content_block && typeof event.content_block === 'object'
+                ? (event.content_block as Record<string, unknown>)
+                : {}
+
+            nativeOpenBlocks.add(anthropicIndex)
+
+            if (block.type === 'tool_use') {
+              const id = typeof block.id === 'string' ? block.id : `toolu_${anthropicIndex}`
+              const name = typeof block.name === 'string' ? block.name : ''
+              const initialInput =
+                block.input && typeof block.input === 'object' && !Array.isArray(block.input)
+                  ? (block.input as Record<string, unknown>)
+                  : {}
+
+              nativeBlockStates.set(anthropicIndex, {
+                kind: 'tool_use',
+                anthropicIndex,
+                id,
+                name,
+                input: initialInput,
+                partialJson: '',
+              })
+              finalBlocks.set(anthropicIndex, { type: 'tool_use', id, name, input: initialInput })
+
+              yield {
+                type: 'content_block_start',
+                index: anthropicIndex,
+                content_block: { type: 'tool_use', id, name, input: {} },
+              } as BetaRawMessageStreamEvent
               break
             }
-            case 'content_block_start': {
-              const upstreamIdx = Number(event.index) || 0
-              let anthropicIdx = nativeIdxMap.get(upstreamIdx)
-              if (anthropicIdx === undefined) {
-                anthropicIdx = nextContentIndex++
-                nativeIdxMap.set(upstreamIdx, anthropicIdx)
-              }
-              const block = event.content_block as Record<string, unknown>
-              if (block?.type === 'tool_use') {
-                nativeBlockType.set(anthropicIdx, 'tool_use')
-                nativeToolUseInfo.set(anthropicIdx, { id: (block.id as string) || '', name: (block.name as string) || '' })
-                logForDebugging(`[openaiCompat] 原生 tool_use 开始: index=${anthropicIdx}, name=${block.name}, id=${block.id}`, { level: 'debug' })
-                yield { type: 'content_block_start', index: anthropicIdx, content_block: block }
+
+            // 与原逻辑一致：thinking 对 UI 映射为文本块。
+            nativeBlockStates.set(anthropicIndex, {
+              kind: 'text',
+              anthropicIndex,
+              text: '',
+            })
+            finalBlocks.set(anthropicIndex, { type: 'text', text: '' })
+
+            yield {
+              type: 'content_block_start',
+              index: anthropicIndex,
+              content_block: { type: 'text', text: '' },
+            } as BetaRawMessageStreamEvent
+            break
+          }
+
+          case 'content_block_delta': {
+            const upstreamIndex = Number(event.index) || 0
+            let anthropicIndex = nativeIndexMap.get(upstreamIndex)
+            const delta =
+              event.delta && typeof event.delta === 'object'
+                ? (event.delta as Record<string, unknown>)
+                : {}
+
+            if (delta.type === 'signature_delta') {
+              // UI 不展示签名，但保留流稳定性。
+              break
+            }
+
+            if (anthropicIndex === undefined) {
+              anthropicIndex = nextContentIndex++
+              nativeIndexMap.set(upstreamIndex, anthropicIndex)
+              nativeOpenBlocks.add(anthropicIndex)
+
+              if (delta.type === 'input_json_delta') {
+                const id = typeof delta.id === 'string' ? delta.id : `toolu_${anthropicIndex}`
+                const name = typeof delta.name === 'string' ? delta.name : ''
+                nativeBlockStates.set(anthropicIndex, {
+                  kind: 'tool_use',
+                  anthropicIndex,
+                  id,
+                  name,
+                  input: {},
+                  partialJson: '',
+                })
+                finalBlocks.set(anthropicIndex, { type: 'tool_use', id, name, input: {} })
+
+                yield {
+                  type: 'content_block_start',
+                  index: anthropicIndex,
+                  content_block: { type: 'tool_use', id, name, input: {} },
+                } as BetaRawMessageStreamEvent
               } else {
-                nativeBlockType.set(anthropicIdx, 'text')
-                logForDebugging(`[openaiCompat] 原生文本块开始: index=${anthropicIdx}`, { level: 'debug' })
-                yield { type: 'content_block_start', index: anthropicIdx, content_block: { type: 'text', text: '' } } as BetaRawMessageStreamEvent
-              }
-              break
-            }
-            case 'content_block_delta': {
-              const upstreamIdx = Number(event.index) || 0
-              let anthropicIdx = nativeIdxMap.get(upstreamIdx)
-              const delta = event.delta as Record<string, unknown>
-              const originalType = delta?.type
-              if (originalType === 'signature_delta') {
-                logForDebugging(`[openaiCompat] 跳过 signature_delta (index=${upstreamIdx})`, { level: 'debug' })
-                continue
-              }
-              let outputDelta = delta
-              if (originalType === 'thinking_delta') {
-                outputDelta = { type: 'text_delta', text: delta.thinking }
-                logForDebugging(`[openaiCompat] 转换 thinking_delta 为 text_delta, 文本长度=${String(delta.thinking).length}`, { level: 'debug' })
-              }
-              if (anthropicIdx === undefined) {
-                anthropicIdx = nextContentIndex++
-                nativeIdxMap.set(upstreamIdx, anthropicIdx)
-                const guessType = originalType === 'input_json_delta' ? 'tool_use' : 'text'
-                nativeBlockType.set(anthropicIdx, guessType)
-                logForDebugging(`[openaiCompat] 自动合成 ${guessType} 块 (upstream ${upstreamIdx} -> Anthropic ${anthropicIdx})`, { level: 'debug' })
-                if (guessType === 'tool_use') {
-                  const id = (delta?.id as string) || `toolu_${anthropicIdx}`
-                  const name = (delta?.name as string) || ''
-                  nativeToolUseInfo.set(anthropicIdx, { id, name })
-                  yield { type: 'content_block_start', index: anthropicIdx, content_block: { type: 'tool_use', id, name, input: '' } }
-                } else {
-                  yield { type: 'content_block_start', index: anthropicIdx, content_block: { type: 'text', text: '' } }
-                }
-              }
-              if (nativeBlockType.get(anthropicIdx) === 'tool_use' && (delta?.id || delta?.name)) {
-                const info = nativeToolUseInfo.get(anthropicIdx) ?? { id: '', name: '' }
-                if (delta.id) info.id = delta.id as string
-                if (delta.name) info.name = delta.name as string
-                nativeToolUseInfo.set(anthropicIdx, info)
-              }
-              yield { type: 'content_block_delta', index: anthropicIdx, delta: outputDelta }
-              break
-            }
-            case 'content_block_stop': {
-              const upstreamIdx = Number(event.index) || 0
-              const anthropicIdx = nativeIdxMap.get(upstreamIdx)
-              if (anthropicIdx !== undefined) {
-                nativeBlockType.delete(anthropicIdx)
-                nativeIdxMap.delete(upstreamIdx)
-                yield { type: 'content_block_stop', index: anthropicIdx }
-              }
-              break
-            }
-            case 'message_delta': {
-              const u = event.usage as Record<string, unknown>
-              if (u?.output_tokens) completionTokens = u.output_tokens as number
-              nativeMessageDeltaSent = true
-              yield { type: 'message_delta', delta: event.delta as any, usage: { output_tokens: completionTokens } }
-              break
-            }
-            case 'message_stop': {
-              yield* closeAllNativeBlocks()
-              if (!nativeMessageDeltaSent) {
-                yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: completionTokens } }
-              }
-              // 不再产出自定义 assistant 事件
-              _lastResponseBytes = responseBytes
-              yield { type: 'message_stop' }
+                nativeBlockStates.set(anthropicIndex, {
+                  kind: 'text',
+                  anthropicIndex,
+                  text: '',
+                })
+                finalBlocks.set(anthropicIndex, { type: 'text', text: '' })
 
-              // ========== 关键修复：构建包含工具调用的 content ==========
-              const finalContent: any[] = []
-              if (collectedText) finalContent.push({ type: 'text', text: collectedText })
-              for (const tc of collectedToolCalls) {
-                let inputObj: any
-                try { inputObj = JSON.parse(tc.function.arguments) } catch { inputObj = {} }
-                finalContent.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: inputObj })
+                yield {
+                  type: 'content_block_start',
+                  index: anthropicIndex,
+                  content_block: { type: 'text', text: '' },
+                } as BetaRawMessageStreamEvent
               }
-							
-							for (const block of finalContent) {
-									if (block.type === 'tool_use') {
-											const idx = nextContentIndex++;
-											yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id, name: block.name, input: '' } } as any;
-											const inputStr = JSON.stringify(block.input);
-											yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: inputStr } } as any;
-											yield { type: 'content_block_stop', index: idx } as any;
-									} else if (block.type === 'text') {
-											// 如果还有文本块，也可以输出，但通常工具调用时文本已经处理过
-									}
-							}
-							
-							 // ========== 关键添加：将工具调用作为 AssistantMessage 发送 ==========
-							const toolUseBlocks = finalContent.filter(block => block.type === 'tool_use');
-							if (toolUseBlocks.length > 0) {
-									const assistantMsg = {
-											type: 'assistant',
-											message: {
-													role: 'assistant',
-													content: toolUseBlocks,
-													usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-											},
-											uuid: crypto.randomUUID(),
-											parentUuid: undefined,
-											source: 'api'
-									};
-									yield assistantMsg as any;
-							}
-              const finalMessage: BetaMessage = {
-                id: 'anthropic-native',
-                type: 'message',
-                role: 'assistant',
-                model: input.model,
-                content: finalContent,
-                stop_reason: 'end_turn',
-                stop_sequence: null,
-                usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-              } as BetaMessage
-              yield { type: 'final_message', message: finalMessage } as any;
-              return finalMessage
             }
+
+            const state = nativeBlockStates.get(anthropicIndex)
+
+            if (state?.kind === 'tool_use' && delta.type === 'input_json_delta') {
+              const partialJson = typeof delta.partial_json === 'string' ? delta.partial_json : ''
+              state.partialJson += partialJson
+
+              yield {
+                type: 'content_block_delta',
+                index: anthropicIndex,
+                delta: { type: 'input_json_delta', partial_json: partialJson },
+              } as BetaRawMessageStreamEvent
+              break
+            }
+
+            const text =
+              delta.type === 'thinking_delta'
+                ? typeof delta.thinking === 'string'
+                  ? delta.thinking
+                  : ''
+                : typeof delta.text === 'string'
+                  ? delta.text
+                  : ''
+
+            if (text) {
+              if (state?.kind === 'text') state.text += text
+              appendFinalText(anthropicIndex, text)
+
+              yield {
+                type: 'content_block_delta',
+                index: anthropicIndex,
+                delta: { type: 'text_delta', text },
+              } as BetaRawMessageStreamEvent
+            }
+            break
           }
-          continue
-        }
 
-        // ===============================
-        // OpenAI choices 路径
-        // ===============================
-        const chunk = event as unknown as OpenAIStreamChunk
-        const choice = chunk.choices[0]
-        const delta = choice ? (choice.delta as Record<string, unknown>) : void 0
+          case 'content_block_stop': {
+            const upstreamIndex = Number(event.index) || 0
+            const anthropicIndex = nativeIndexMap.get(upstreamIndex)
+            if (anthropicIndex === undefined) break
 
-        if (!started) {
-          started = true
-          promptTokens = chunk.usage?.prompt_tokens ?? 0
-          yield { type: 'message_start', message: { id: chunk.id ?? 'openai-compat', type: 'message', role: 'assistant', model: input.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: promptTokens, output_tokens: 0 } } }
-        }
-
-        // ========== 关键修改：使用 ToolCallExtractor 处理文本增量 ==========
-				if (delta?.content) {
-						// 先定义 text，再调用 extract
-						const text = delta.content as string;
-						const result = toolExtractor.extract(text);   // 唯一的 result 声明
-
-						// 收集工具调用
-						for (const tc of result.toolCalls) {
-								collectedToolCalls.push(tc);
-						}
-
-						// 输出纯文本部分
-						if (result.text) {
-								collectedText += result.text;
-								if (activeBlockType !== 'text') {
-										yield* closeActiveBlock();
-										activeBlockIndex = nextContentIndex++;
-										yield { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } };
-										activeBlockType = 'text';
-								}
-								yield { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: result.text } };
-						}
-
-						// 输出提取到的工具调用（转换为 Anthropic 事件）
-						for (const toolCall of result.toolCalls) {
-								yield* closeActiveBlock();
-								const idx = nextContentIndex++;
-								let input: any;
-								try { input = JSON.parse(toolCall.function.arguments); } catch { input = {}; }
-								yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: toolCall.id, name: toolCall.function.name, input: '' } };
-								yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: toolCall.function.arguments } };
-								yield { type: 'content_block_stop', index: idx };
-						}
-				}
-        // 处理 thinking 增量（保持原有逻辑）
-        if (delta && (delta as any).thinking !== undefined) {
-          const t = (delta as any).thinking as string
-          collectedText += t
-          if (activeBlockType !== 'text') {
-            yield* closeActiveBlock()
-            activeBlockIndex = nextContentIndex++
-            yield { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } }
-            activeBlockType = 'text'
-          }
-          yield { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: t } }
-        }
-
-        // 处理原始的 OpenAI tool_calls（可选，保留兼容）
-        if (delta && Array.isArray((delta as any).tool_calls)) {
-          yield* closeActiveBlock()
-          for (const tc of (delta as any).tool_calls as any[]) {
-            const oi = tc.index ?? 0
-            let ai = toolIdxMap.get(oi)
-            if (ai === undefined) {
-              ai = nextContentIndex++
-              toolIdxMap.set(oi, ai)
-              const state = { id: tc.id ?? `toolu_${oi}`, name: tc.function?.name ?? '', arguments: '' }
-              toolState.set(oi, state)
-              // 收集工具调用（注意：这里也要收集）
-              collectedToolCalls.push({
+            const state = nativeBlockStates.get(anthropicIndex)
+            if (state?.kind === 'tool_use') {
+              const parsedInput = state.partialJson
+                ? parseJsonObject(state.partialJson)
+                : state.input
+              finalBlocks.set(anthropicIndex, {
+                type: 'tool_use',
                 id: state.id,
-                type: 'function',
-                function: { name: state.name, arguments: state.arguments }
+                name: state.name,
+                input: parsedInput,
               })
-              yield { type: 'content_block_start', index: ai, content_block: { type: 'tool_use', id: state.id, name: state.name, input: '' } }
             }
-            const state = toolState.get(oi)
-            if (state && tc.function?.arguments) {
-              state.arguments += tc.function.arguments
-              yield { type: 'content_block_delta', index: ai, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } }
+
+            nativeOpenBlocks.delete(anthropicIndex)
+            nativeIndexMap.delete(upstreamIndex)
+
+            yield { type: 'content_block_stop', index: anthropicIndex } as BetaRawMessageStreamEvent
+            break
+          }
+
+          case 'message_delta': {
+            const usage =
+              event.usage && typeof event.usage === 'object'
+                ? (event.usage as Record<string, unknown>)
+                : undefined
+            const delta =
+              event.delta && typeof event.delta === 'object'
+                ? (event.delta as Record<string, unknown>)
+                : {}
+
+            if (typeof usage?.output_tokens === 'number') {
+              completionTokens = usage.output_tokens
             }
+            if (typeof delta.stop_reason === 'string') {
+              nativeStopReason = delta.stop_reason as BetaMessage['stop_reason']
+            }
+
+            nativeMessageDeltaSent = true
+
+            yield {
+              type: 'message_delta',
+              delta: {
+                ...delta,
+                stop_reason: nativeStopReason,
+                stop_sequence: delta.stop_sequence ?? null,
+              },
+              usage: { output_tokens: completionTokens },
+            } as BetaRawMessageStreamEvent
+            break
+          }
+
+          case 'message_stop': {
+            return yield* finalizeNativeStream()
+          }
+
+          default: {
+            logForDebugging(`[openaiCompat] 忽略未知 Anthropic SSE 事件: ${eventType}`, {
+              level: 'debug',
+            })
           }
         }
 
-        // finish_reason 处理（结束消息前 flush 提取器）
-				if (choice?.finish_reason) {
-          logForDebugging(`[openaiCompat] 收到 finish_reason=${choice.finish_reason}, 准备结束消息`, { level: 'debug' })
-          // 提取剩余缓冲区内容
-          const flushResult = toolExtractor.flush()
-          if (flushResult.text) {
-            collectedText += flushResult.text
-            if (activeBlockType !== 'text') {
-              yield* closeActiveBlock()
-              activeBlockIndex = nextContentIndex++
-              yield { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } }
-              activeBlockType = 'text'
-            }
-            yield { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: flushResult.text } }
-          }
-          for (const tc of flushResult.toolCalls) {
-            collectedToolCalls.push(tc)
-            yield* closeActiveBlock()
-            const idx = nextContentIndex++
-            let input: any
-            try { input = JSON.parse(tc.function.arguments) } catch { input = {} }
-            yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: tc.id, name: tc.function.name, input: '' } }
-            yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } }
-            yield { type: 'content_block_stop', index: idx }
-          }
+        continue
+      }
 
-          yield* closeActiveBlock()
-          for (const ai of toolIdxMap.values()) {
-            yield { type: 'content_block_stop', index: ai }
-          }
-          completionTokens = chunk.usage?.completion_tokens ?? completionTokens
+      // ===============================
+      // OpenAI choices SSE 路径
+      // ===============================
+      streamMode = 'openai'
+      const chunk = event as unknown as OpenAIStreamChunk
+      const choice = chunk.choices?.[0]
+
+      // 部分兼容服务在 SSE data 中返回完整非流式 chat.completion。
+      if (choice?.message && !choice.delta) {
+        const parsed = tryParseNonStreamingResponse(data, input.model)
+        if (parsed) {
+          promptTokens = parsed.promptTokens
+          completionTokens = parsed.completionTokens
+          for (const parsedEvent of parsed.events) yield parsedEvent
           _lastResponseBytes = responseBytes
-          // 不再产出自定义 assistant 事件
-          yield { type: 'message_delta', delta: { stop_reason: mapFinishReason(choice.finish_reason), stop_sequence: null }, usage: { output_tokens: completionTokens } }
-          yield { type: 'message_stop' }
+          yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+          return parsed.resultMessage
+        }
+      }
 
-          // ========== 关键修复：构建包含工具调用的 content ==========
-          const finalContent: any[] = []
-          if (collectedText) finalContent.push({ type: 'text', text: collectedText })
-          for (const tc of collectedToolCalls) {
-            let inputObj: any
-            try { inputObj = JSON.parse(tc.function.arguments) } catch { inputObj = {} }
-            finalContent.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: inputObj })
-          }
-					
-					 // ========== 关键添加：将工具调用作为 AssistantMessage 发送 ==========
-					const toolUseBlocks = finalContent.filter(block => block.type === 'tool_use');
-					if (toolUseBlocks.length > 0) {
-							const assistantMsg = {
-									type: 'assistant',
-									message: {
-											role: 'assistant',
-											content: toolUseBlocks,
-											usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-									},
-									uuid: crypto.randomUUID(),
-									parentUuid: undefined,
-									source: 'api'
-							};
-							yield assistantMsg as any;
-					}
-					for (const block of finalContent) {
-							if (block.type === 'tool_use') {
-									const idx = nextContentIndex++;
-									yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id, name: block.name, input: '' } } as any;
-									const inputStr = JSON.stringify(block.input);
-									yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: inputStr } } as any;
-									yield { type: 'content_block_stop', index: idx } as any;
-							} else if (block.type === 'text') {
-									// 如果还有文本块，也可以输出，但通常工具调用时文本已经处理过
-							}
-					}
-          const finalMessage: BetaMessage = {
-            id: chunk.id ?? 'openai-compat',
+      const delta = choice?.delta
+
+      if (!started) {
+        started = true
+        messageId = chunk.id ?? 'openai-compat'
+        promptTokens = chunk.usage?.prompt_tokens ?? promptTokens
+
+        yield {
+          type: 'message_start',
+          message: {
+            id: messageId,
             type: 'message',
             role: 'assistant',
             model: input.model,
-            content: finalContent,
-            stop_reason: mapFinishReason(choice.finish_reason),
+            content: [],
+            stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-          } as BetaMessage
-          yield { type: 'final_message', message: finalMessage } as any;
-          return finalMessage
+            usage: { input_tokens: promptTokens, output_tokens: 0 },
+          },
+        } as BetaRawMessageStreamEvent
+      }
+
+      if (typeof chunk.usage?.prompt_tokens === 'number') {
+        promptTokens = chunk.usage.prompt_tokens
+      }
+      if (typeof chunk.usage?.completion_tokens === 'number') {
+        completionTokens = chunk.usage.completion_tokens
+      }
+
+      if (typeof delta?.content === 'string' && delta.content) {
+        yield* emitExtractorResult(toolExtractor.extract(delta.content))
+      }
+
+      // 某些兼容端点使用 thinking 字段；保持原逻辑，将其映射为可见文本。
+      if (typeof delta?.thinking === 'string' && delta.thinking) {
+        yield* emitText(delta.thinking)
+      }
+
+      if (Array.isArray(delta?.tool_calls)) {
+        yield* closeActiveTextBlock()
+
+        for (const toolCallDelta of delta.tool_calls) {
+          const openAIIndex = toolCallDelta.index ?? 0
+          let state = openAIToolStates.get(openAIIndex)
+
+          if (!state) {
+            state = {
+              openAIIndex,
+              id: toolCallDelta.id ?? `toolu_${openAIIndex}`,
+              name: '',
+              arguments: '',
+              queuedArgumentDeltas: [],
+              started: false,
+              closed: false,
+            }
+            openAIToolStates.set(openAIIndex, state)
+          }
+
+          // content_block_start 发出后不能再修改 id，因此只在开始前吸收后续 id。
+          if (!state.started && toolCallDelta.id) state.id = toolCallDelta.id
+          appendToolName(state, toolCallDelta.function?.name)
+
+          const argumentsDelta = toolCallDelta.function?.arguments
+          if (typeof argumentsDelta === 'string' && argumentsDelta) {
+            state.arguments += argumentsDelta
+
+            if (state.started && state.anthropicIndex !== undefined) {
+              yield {
+                type: 'content_block_delta',
+                index: state.anthropicIndex,
+                delta: { type: 'input_json_delta', partial_json: argumentsDelta },
+              } as BetaRawMessageStreamEvent
+            } else {
+              state.queuedArgumentDeltas.push(argumentsDelta)
+              yield* ensureOpenAIToolStarted(state)
+            }
+          }
         }
       }
-    }
-  }
 
-  if (!started && buffer.trim()) {
-    const maybeParsed = tryParseNonStreamingResponse(buffer.trim(), input.model)
-    if (maybeParsed) {
-      started = true
-      promptTokens = maybeParsed.promptTokens
-      completionTokens = maybeParsed.completionTokens
-      for (const ev of maybeParsed.events) yield ev
-      _lastResponseBytes = responseBytes
-      yield { type: 'message_stop' }
-      // 同样修复这里的返回消息 content
-      const finalContent: any[] = []
-      if (collectedText) finalContent.push({ type: 'text', text: collectedText })
-      for (const tc of collectedToolCalls) {
-        let inputObj: any
-        try { inputObj = JSON.parse(tc.function.arguments) } catch { inputObj = {} }
-        finalContent.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: inputObj })
+      if (choice?.finish_reason) {
+        openAIStopReason = mapFinishReason(choice.finish_reason)
+        logForDebugging(`[openaiCompat] 收到 finish_reason=${choice.finish_reason}`, {
+          level: 'debug',
+        })
       }
-      const resultMsg = maybeParsed.resultMessage
-      resultMsg.content = finalContent as any
-      yield { type: 'final_message', message: resultMsg } as any;
-      return resultMsg
     }
   }
 
-  // 流意外结束时的清理
-  logForDebugging(`[openaiCompat] 流意外结束`, { level: 'debug' })
-  const flushResult = toolExtractor.flush()
-  if (flushResult.text) {
-    collectedText += flushResult.text
-    if (activeBlockType !== 'text') {
-      yield* closeActiveBlock()
-      activeBlockIndex = nextContentIndex++
-      yield { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } }
-      activeBlockType = 'text'
+  // 非流式 JSON 回退。
+  if (streamMode === 'unknown' && buffer.trim()) {
+    const parsed = tryParseNonStreamingResponse(buffer.trim(), input.model)
+    if (parsed) {
+      for (const event of parsed.events) yield event
+      _lastResponseBytes = responseBytes
+      yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+      return parsed.resultMessage
     }
-    yield { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: flushResult.text } }
   }
-  for (const tc of flushResult.toolCalls) {
-    collectedToolCalls.push(tc)
-    yield* closeActiveBlock()
-    const idx = nextContentIndex++
-    let input: any
-    try { input = JSON.parse(tc.function.arguments) } catch { input = {} }
-    yield { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: tc.id, name: tc.function.name, input: '' } }
-    yield { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } }
-    yield { type: 'content_block_stop', index: idx }
+
+  // 某些 OpenAI 兼容服务不会发送 [DONE]，EOF 时正常收尾。
+  if (streamMode === 'openai') {
+    return yield* finalizeOpenAIStream()
   }
-  yield* closeActiveBlock()
-  for (const ai of toolIdxMap.values()) yield { type: 'content_block_stop', index: ai }
-  yield* closeAllNativeBlocks()
-  // 不再产出自定义 assistant 事件
-  _lastResponseBytes = responseBytes
-  if (!started) throw new Error(`[openaiCompat] 未收到 message_start 事件，模型: ${input.model}`)
-  
-  // 同样修复
-  const finalContent: any[] = []
-  if (collectedText) finalContent.push({ type: 'text', text: collectedText })
-  for (const tc of collectedToolCalls) {
-    let inputObj: any
-    try { inputObj = JSON.parse(tc.function.arguments) } catch { inputObj = {} }
-    finalContent.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: inputObj })
+
+  if (streamMode === 'anthropic') {
+    throw new Error(`[openaiCompat] 原生 Anthropic 流在收到 message_stop 前结束，模型: ${input.model}`)
   }
-  const fallbackMessage: BetaMessage = {
-    id: 'openai-compat-fallback',
-    type: 'message',
-    role: 'assistant',
-    model: input.model,
-    content: finalContent,
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: { input_tokens: promptTokens, output_tokens: completionTokens }
-  } as BetaMessage
-  yield { type: 'final_message', message: fallbackMessage } as any;
-  return fallbackMessage
+
+  throw new Error(`[openaiCompat] 未收到有效响应事件，模型: ${input.model}`)
 }
 
-// 记录最近一次 OpenAI 兼容请求的响应字节数（供外部监控使用）
+// 记录最近一次 OpenAI 兼容请求的响应字节数，供外部监控使用。
 let _lastResponseBytes = 0
+
 export function getLastResponseBytes(): number {
   return _lastResponseBytes
 }
 
 /**
- * 将 OpenAI 的 usage 信息映射为 Anthropic 的 BetaUsage 结构
+ * 将 OpenAI usage 映射为 Anthropic BetaUsage。
  */
 export function mapOpenAIUsageToAnthropic(usage?: {
   prompt_tokens?: number
   completion_tokens?: number
 }): BetaUsage | undefined {
   if (!usage) return undefined
+
   return {
     input_tokens: usage.prompt_tokens ?? 0,
     output_tokens: usage.completion_tokens ?? 0,
@@ -1130,8 +1578,8 @@ export function mapOpenAIUsageToAnthropic(usage?: {
   } as BetaUsage
 }
 
-// ================== 工具调用提取器（完整保留） ==================
-// 工具调用类型定义（与 OpenAI 兼容）
+// ================== 文本工具调用提取器 ==================
+
 export type ToolCall = {
   id: string
   type: 'function'
@@ -1141,1573 +1589,710 @@ export type ToolCall = {
   }
 }
 
-// 提取结果
 export type ExtractResult = {
-  text: string               // 当前可安全输出的纯文本
-  toolCalls: ToolCall[]      // 本次 delta 中提取到的完整工具调用
-  remaining: string          // 暂存区剩余未匹配内容（供调试）
+  text: string
+  toolCalls: ToolCall[]
+  remaining: string
+}
+
+export type ToolCallExtractorOptions = {
+  /** 是否将 bash/cmd 代码块解释为工具执行。默认 false，避免误吞代码示例。 */
+  enableBashCodeBlock?: boolean
+  /** 是否将裸命令行解释为工具执行。默认 false，避免误吞普通文本。 */
+  enableBareCommandLine?: boolean
 }
 
 /**
- * 全功能工具调用提取器
- * 支持多种格式：XML标签、代码块、函数调用、JSON对象等
- * 当无法匹配任何已知模式且缓冲区非空时，会回退将全部文本作为特殊工具调用提取
+ * 从模型文本中兼容提取工具调用。
+ *
+ * 设计原则：
+ * 1. 标准 OpenAI delta.tool_calls 优先由流转换器直接处理；
+ * 2. 本类只承担旧模型和代理服务输出文本协议时的兼容；
+ * 3. 只有仍可能补全为工具协议的尾部会暂存，不再因为普通 Tool:/Action: 文本阻塞 UI；
+ * 4. flush() 不静默丢弃文本。
  */
 export class ToolCallExtractor {
-  // 原有缓冲区（用于遗留正则匹配）
-  private buffer = "";
-  private emittedTextLen = 0;
-  private toolCallCounter = 0;
-  private seenToolKeys = new Set<string>();
-  // 新增：最终合并后的工具调用（同一语义只保留一个）
-  private mergedToolCalls = new Map<string, ToolCall>();
-  private pendingToolCalls = new Map<string, ToolCall>();  // key: 标准化签名 -> ToolCall
-  // 追踪已经产出过的工具调用，避免 flush() 时重复产出
-  private emittedToolKeys = new Set<string>();
-  private inSentinel = false;
-  private sentinelBuffer = "";        // 哨兵模式下累积的字符
-  private readonly TOOL_TAG_OPEN = "<tool_calling>";
-  private readonly TOOL_TAG_CLOSE = "</tool_calling>";
-  constructor(private opts: { enableBashCodeBlock?: boolean } = {}) {}
-  private emittedText = ""; // 仅用于调试
-  // 新增哨兵模式属性
-  private sentinelActive = false;
-  private sentinelBuffer = "";
-  private sentinelType: "tool" | "xml" | null = null; // 当前哨兵类型
-  private readonly TOOL_PREFIX = "Tool:";              // 英文模式
-  private readonly ARGS_PREFIX = "Arguments:";        // 参数前缀
-  private readonly XML_OPEN = "<tool_calling>";        // XML 模式
-  private readonly CN_PREFIX = "调用：";               // 中文模式（可扩展）
+  private buffer = ''
+  private emittedTextLen = 0
+  private toolCallCounter = 0
+  private readonly emittedToolKeys = new Set<string>()
 
- /**
-   * 尝试从哨兵缓冲区中提取完整的工具调用（针对 Tool: 格式）
-   * 返回 { name, argsJson, endIndex } 或 null
-   */
-  private tryExtractToolFormat(): { name: string; argsJson: string; endIndex: number } | null {
-    const buf = this.sentinelBuffer;
-    // 查找 "Tool: Name\nArguments:"
-    const toolMatch = /\bTool:\s*([a-zA-Z0-9_:]+)\s*\n\s*Arguments:\s*/i.exec(buf);
-    if (!toolMatch) return null;
-    const toolName = toolMatch[1];
-    const argsStartIndex = toolMatch.index + toolMatch[0].length;
-    // 从 argsStartIndex 开始查找完整的 JSON 对象
-    let braceCount = 0;
-    let inString = false;
-    let escape = false;
-    let jsonEnd = -1;
-    for (let i = argsStartIndex; i < buf.length; i++) {
-      const ch = buf[i];
-      if (inString) {
-        if (escape) escape = false;
-        else if (ch === '\\') escape = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === '{') braceCount++;
-      else if (ch === '}') {
-        braceCount--;
-        if (braceCount === 0) {
-          jsonEnd = i + 1;
-          break;
-        }
-      }
-    }
-    if (jsonEnd === -1) return null; // JSON 不完整
-    const argsJson = buf.slice(argsStartIndex, jsonEnd);
-    // 验证 JSON 合法性
-    try { JSON.parse(argsJson); } catch { return null; }
-    // 检查 JSON 之后是否跟着换行 + 另一个 "Tool:" 或字符串结束
-    const after = buf.slice(jsonEnd);
-    if (after.length > 0 && !/^\s*\n\s*Tool:/i.test(after) && !/^\s*$/.test(after)) {
-      // 后面还有非空白非 Tool: 的内容，可能是同一个工具调用的后续？实际上这里应该允许后续内容
-      // 保守起见，只要 JSON 完整且后面要么是空，要么是另一个 Tool: 开头，就认为完整
-      if (!/^\s*\n\s*Tool:/i.test(after) && !/^\s*$/.test(after)) {
-        // 但可能是同一个工具调用的更多参数？不，JSON 已闭合，多余内容应属于下一个工具或普通文本
-        // 我们可以忽略多余内容，让它留到递归中处理
-      }
-    }
-    return { name: toolName, argsJson, endIndex: jsonEnd };
-  }
-
-  /**
-   * 尝试从哨兵缓冲区中提取完整的 XML 工具调用
-   */
-  private tryExtractXmlFormat(): { name: string; argsJson: string; endIndex: number } | null {
-    const buf = this.sentinelBuffer;
-    const openTag = this.XML_OPEN;
-    const closeTag = "</tool_calling>";
-    const openIdx = buf.indexOf(openTag);
-    if (openIdx === -1) return null;
-    const closeIdx = buf.indexOf(closeTag, openIdx + openTag.length);
-    if (closeIdx === -1) return null;
-    const inner = buf.substring(openIdx + openTag.length, closeIdx);
-    const nameMatch = /<name>([\s\S]*?)<\/name>/i.exec(inner);
-    const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
-    if (!nameMatch || !argsMatch) return null;
-    const name = nameMatch[1].trim();
-    let argsJson = argsMatch[1].trim();
-    const jsonMatch = argsJson.match(/\{[\s\S]*\}/);
-    if (jsonMatch) argsJson = jsonMatch[0];
-    try { JSON.parse(argsJson); } catch { return null; }
-    const endIndex = closeIdx + closeTag.length;
-    return { name, argsJson, endIndex };
-  }
-
-  /**
-   * 尝试提取中文格式（调用：工具名\n参数：{...}）
-   * 类似可扩展
-   */
-  private tryExtractCnFormat(): { name: string; argsJson: string; endIndex: number } | null {
-    const buf = this.sentinelBuffer;
-    const cnMatch = /调用：\s*([a-zA-Z0-9_:]+)\s*\n\s*参数：\s*/i.exec(buf);
-    if (!cnMatch) return null;
-    const toolName = cnMatch[1];
-    const argsStart = cnMatch.index + cnMatch[0].length;
-    // 同样查找完整的 JSON 对象
-    let braceCount = 0, inString = false, escape = false, end = -1;
-    for (let i = argsStart; i < buf.length; i++) {
-      const ch = buf[i];
-      if (inString) {
-        if (escape) escape = false;
-        else if (ch === '\\') escape = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === '{') braceCount++;
-      else if (ch === '}') {
-        braceCount--;
-        if (braceCount === 0) { end = i + 1; break; }
-      }
-    }
-    if (end === -1) return null;
-    const argsJson = buf.slice(argsStart, end);
-    try { JSON.parse(argsJson); } catch { return null; }
-    return { name: toolName, argsJson, endIndex: end };
-  }
-
-  /**
-   * 检测缓冲区开头是否可能是某个工具格式的前缀
-   * 用于决定是否进入哨兵模式
-   */
-  private startsWithAnyPrefix(str: string): boolean {
-    const prefixes = [this.TOOL_PREFIX, this.XML_OPEN, this.CN_PREFIX];
-    for (const p of prefixes) {
-      if (p.startsWith(str) || str.startsWith(p)) return true;
-    }
-    // 特殊：单个 '<' 可能是 XML 开始
-    if (str === '<') return true;
-    // 单个 'T' 可能是 "Tool:" 开始
-    if (str === 'T') return true;
-    return false;
-  }
+  constructor(private readonly opts: ToolCallExtractorOptions = {}) {}
 
   private generateId(): string {
-    return Math.random().toString(36).slice(2, 10);
+    return Math.random().toString(36).slice(2, 10)
   }
 
-  /**
-   * 哨兵模式：判断当前累积的字符串是否为完整工具调用
-   * @returns 若匹配成功，返回 { name, argsJson, endIndex }；否则 null
-   */
-  private tryExtractCompleteToolCall(): { name: string; argsJson: string; endIndex: number } | null {
-    const content = this.sentinelBuffer;
-    const openTag = this.TOOL_TAG_OPEN;
-    const closeTag = this.TOOL_TAG_CLOSE;
-    const openIdx = content.indexOf(openTag);
-    if (openIdx === -1) return null;
-    const closeIdx = content.indexOf(closeTag, openIdx + openTag.length);
-    if (closeIdx === -1) return null;
-
-    // 提取 <name>...</name> 和 <arguments>...</arguments>
-    const inner = content.substring(openIdx + openTag.length, closeIdx);
-    const nameMatch = /<name>([\s\S]*?)<\/name>/i.exec(inner);
-    const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
-    if (!nameMatch || !argsMatch) return null;
-
-    const name = nameMatch[1].trim();
-    let argsJson = argsMatch[1].trim();
-    // 尝试提取 JSON 对象（可能被额外的空白或换行包围）
-    const jsonMatch = argsJson.match(/\{[\s\S]*\}/);
-    if (jsonMatch) argsJson = jsonMatch[0];
-    // 验证是否为合法 JSON
-    try {
-      JSON.parse(argsJson);
-    } catch {
-      return null;
+  private stableStringify(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map(item => this.stableStringify(item)).join(',')}]`
     }
-    const endIndex = closeIdx + closeTag.length;
-    return { name, argsJson, endIndex };
+
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>
+      return `{${Object.keys(record)
+        .sort()
+        .map(key => `${JSON.stringify(key)}:${this.stableStringify(record[key])}`)
+        .join(',')}}`
+    }
+
+    return JSON.stringify(value)
   }
 
-  /**
-   * 哨兵模式：判断当前累积的字符串是否仍有可能成为合法前缀
-   * 例如：已有 "<"、"<t"、"<to" 等都是前缀，而 "<x" 则不可能。
-   */
-  private isPossiblePrefix(): boolean {
-    const content = this.sentinelBuffer;
-    const tag = this.TOOL_TAG_OPEN;
-    // 如果 content 长度小于 tag 长度，检查 content 是否是 tag 的前缀
-    if (content.length <= tag.length) {
-      return tag.startsWith(content);
-    }
-    // 如果已经超过 tag 长度，检查是否包含完整的 open tag 前缀
-    // 但更简单的逻辑：只要没有出现不匹配的字符，就继续等待
-    // 这里我们只检查最短前缀：如果 content 以 "<" 开头，且后续字符与 tag 不冲突
-    for (let i = 0; i < Math.min(content.length, tag.length); i++) {
-      if (content[i] !== tag[i]) {
-        return false;
-      }
-    }
-    // 如果已经包含完整的 open tag，但还没闭合，也是可能的
-    if (content.includes(this.TOOL_TAG_OPEN)) {
-      return true;
-    }
-    return true; // 默认可能
-  }
-
-  /**
-   * 将原始工具名规范化为系统期望的名称（首字母大写，去除命名空间前缀）
-   */
   private normalizeToolName(name: string): string {
-    const base = name.includes(':') ? name.split(':').pop() || name : name;
+    const base = name.includes(':') ? name.split(':').pop() || name : name
     const mapping: Record<string, string> = {
-        "bash": "Bash",
-        "cmd": "Bash",
-        "shell": "Bash",
-        "powershell": "Bash",
-        "batch": "Bash",
-        "glob": "Glob",
-				 "find": "Glob",  
-				 
-        "read": "Read",
-				"cat": "Read", 
-        "grep": "Grep",
-				"findstr": "Grep",     // 添加：Windows findstr 映射到 Grep
-        "write": "Write",
-        "edit": "Edit",  
-				"ls": "ListFiles",     // 添加：ls 映射到 ListFiles
-			  "dir": "ListFiles",    // 添加：dir 映射到 ListFiles
-        "listfiles": "ListFiles",   // 关键修改
-        "web_search": "WebSearch",
-        "code_interpreter": "CodeInterpreter",
-        "web_extractor": "WebExtractor",
-        "str_replace_editor": "StrReplaceEditor",
-    };
-    const lower = base.toLowerCase();
-    if (mapping[lower]) return mapping[lower];
-    return base.charAt(0).toUpperCase() + base.slice(1);
+      bash: 'Bash',
+      cmd: 'Bash',
+      shell: 'Bash',
+      powershell: 'Bash',
+      batch: 'Bash',
+      glob: 'Glob',
+      find: 'Glob',
+      read: 'Read',
+      cat: 'Read',
+      grep: 'Grep',
+      findstr: 'Grep',
+      write: 'Write',
+      edit: 'Edit',
+      ls: 'ListFiles',
+      dir: 'ListFiles',
+      listfiles: 'ListFiles',
+      web_search: 'WebSearch',
+      websearch: 'WebSearch',
+      code_interpreter: 'CodeInterpreter',
+      codeinterpreter: 'CodeInterpreter',
+      web_extractor: 'WebExtractor',
+      webextractor: 'WebExtractor',
+      str_replace_editor: 'StrReplaceEditor',
+      strreplaceeditor: 'StrReplaceEditor',
+    }
+
+    const lower = base.toLowerCase()
+    return mapping[lower] ?? `${base.charAt(0).toUpperCase()}${base.slice(1)}`
   }
- /**
-   * 生成工具调用的标准化签名（用于去重合并）
-   */
+
+  private normalizeArgsForKey(toolCall: ToolCall): string {
+    const normalizedName = this.normalizeToolName(toolCall.function.name).toLowerCase()
+
+    try {
+      const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>
+
+      if (normalizedName === 'listfiles') {
+        return `directory=${String(args.directory ?? args.dir ?? args.path ?? args.filePath ?? '.')}`
+      }
+
+      if (normalizedName === 'glob') {
+        return `pattern=${String(args.pattern ?? args.name ?? '')};path=${String(args.path ?? '')}`
+      }
+
+      if (normalizedName === 'bash') {
+        return `command=${String(args.command ?? args.cmd ?? '')}`
+      }
+
+      return this.stableStringify(args)
+    } catch {
+      return toolCall.function.arguments
+    }
+  }
+
   private getToolCallKey(toolCall: ToolCall): string {
-    const name = toolCall.function.name.toLowerCase();
-    // 对参数进行归一化处理
-    let argsNormalized = "";
-    try {
-      const args = JSON.parse(toolCall.function.arguments);
-      // 对于参数结构不同但语义相同的工具，进行归一化
-      if (name === "listfiles" || name === "ListFiles") {
-        // 将 directory/path/filePath 统一为 directory
-        if (args.directory || args.path || args.filePath) {
-          argsNormalized = `directory=${args.directory || args.path || args.filePath}`;
-        } else {
-          argsNormalized = "directory=.";
-        }
-      } else if (name === "glob" || name === "find") {
-        // Glob 和 Find 统一处理
-        argsNormalized = `pattern=${args.pattern || args.name}`;
-      } else if (name === "bash" || name === "shell" || name === "cmd") {
-        // 所有 shell 类命令统一为 Bash
-        argsNormalized = `command=${args.command || args.cmd}`;
-      } else {
-        // 其他工具：使用参数 JSON 的规范化字符串
-        argsNormalized = JSON.stringify(args, Object.keys(args).sort());
-      }
-    } catch {
-      argsNormalized = toolCall.function.arguments;
-    }
-    return `${name}:${argsNormalized}`;
+    return `${this.normalizeToolName(toolCall.function.name).toLowerCase()}:${this.normalizeArgsForKey(toolCall)}`
   }
 
-  /**
-   * 合并两个工具调用（当发现重复时，将新发现的参数合并到已有的调用中）
-   */
-  private mergeToolCalls(existing: ToolCall, incoming: ToolCall): ToolCall {
-    // 如果参数是 JSON 对象，进行深度合并
-    try {
-      const existingArgs = JSON.parse(existing.function.arguments);
-      const incomingArgs = JSON.parse(incoming.function.arguments);
-      const mergedArgs = { ...existingArgs, ...incomingArgs };
-      return {
-        ...existing,
-        function: {
-          ...existing.function,
-          arguments: JSON.stringify(mergedArgs),
-        },
-      };
-    } catch {
-      // 如果解析失败，优先保留参数更完整的那个
-      if (incoming.function.arguments.length > existing.function.arguments.length) {
-        return incoming;
-      }
-      return existing;
-    }
-  }
-
-  /**
-   * 尝试将工具调用添加到合并缓冲区
-   * 如果已存在相同 key 的工具调用，则进行合并而非重复添加
-   * 如果该工具调用已经被产出过，则不再产出
-   */
-  private addOrMergeToolCall(toolCall: ToolCall): ToolCall[] {
-    const key = this.getToolCallKey(toolCall);
-    const existing = this.pendingToolCalls.get(key);
-
-    // 如果已经产出过这个工具调用，直接跳过
+  private addIfNew(toolCall: ToolCall): ToolCall[] {
+    const key = this.getToolCallKey(toolCall)
     if (this.emittedToolKeys.has(key)) {
-      logForDebugging(`[ToolCallExtractor] 跳过已产出的工具调用: ${key}`, { level: 'debug' });
-      return [];
+      logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' })
+      return []
     }
 
-    if (existing) {
-      // 存在重复，进行合并
-      const merged = this.mergeToolCalls(existing, toolCall);
-      this.pendingToolCalls.set(key, merged);
-      logForDebugging(`[ToolCallExtractor] 合并工具调用: ${key}`, { level: 'debug' });
-      return [];  // 不产生新的工具调用，已合并到现有
-    } else {
-      // 新工具调用，添加到缓冲区
-      this.pendingToolCalls.set(key, toolCall);
-      // 标记为已产出
-      this.emittedToolKeys.add(key);
-      logForDebugging(`[ToolCallExtractor] 首次产出工具调用: ${key}`, { level: 'debug' });
-      return [toolCall];  // 首次出现时返回
-    }
+    this.emittedToolKeys.add(key)
+    logForDebugging(`[ToolCallExtractor] 提取工具调用: ${key}`, { level: 'debug' })
+    return [toolCall]
   }
-
 
   private makeToolCall(name: string, args: unknown): ToolCall {
-    const normalizedName = this.normalizeToolName(name);
-    let finalArgs = args;
-    if (normalizedName === "Bash" && typeof finalArgs === "object" && finalArgs !== null) {
-        const cmd = (finalArgs as any).command ?? (finalArgs as any).cmd;
-        if (cmd !== undefined) {
-            finalArgs = { command: String(cmd) };
-        }
-    }
-    const toolCall: ToolCall = {
-        id: `call_${this.generateId()}_${++this.toolCallCounter}`,
-        type: "function",
-        function: {
-            name: normalizedName,
-            arguments: typeof finalArgs === "string" ? finalArgs : JSON.stringify(finalArgs ?? {}),
-        },
-    };
-		logForDebugging(`[ToolCallExtractor] 生成工具调用: name=${normalizedName}, args=${toolCall.function.arguments}`, { level: 'debug' });
-    return toolCall;
-  }
-	private inferToolNameFromArgs(args: any): string | null {
-		if (!args || typeof args !== "object") return null;
-		if (args.tool && typeof args.tool === "string") return args.tool;
-		if (args.name && typeof args.name === "string") return args.name;
-		
-		// 优先推断有明确特征的工具
-		if (args.command !== undefined || args.cmd !== undefined) return "Bash";
-		if (args.code !== undefined) return "CodeInterpreter";
-    if (args.queries !== undefined || args.query !== undefined) return "WebSearch";
-		if (args.url !== undefined || args.urls !== undefined) return "WebExtractor";
-		if (args.file_path !== undefined || args.filePath !== undefined) return "Read";
-		
-		// 新增：识别文件搜索类工具
-		if (args.pattern !== undefined) {
-			if (args.path === undefined || args.path === "" || args.recursive === true) {
-				return "Glob";
-			}
-			return "Grep";
-		}
-		
-		// 新增：识别目录列表工具
-		if (args.directory !== undefined || args.dir !== undefined) {
-			return "ListFiles";
-		}
-		
-		// 新增：识别文本编辑器工具
-		if ((args.old_string !== undefined || args.new_string !== undefined) && args.path) {
-			return "StrReplaceEditor";
-		}
-		
-		return null;
-	}
+    const normalizedName = this.normalizeToolName(name)
+    let finalArgs = args
 
-  private normalizeToolCall(parsed: any): ToolCall | null {
-    if (!parsed || typeof parsed !== "object") return null;
-    // 辅助函数：获取参数对象
-    // excludeKey 是要排除的工具名字段（如 'name'、'tool'、'function'）
-    const extractArgs = (obj: any, excludeKey: string): any => {
-      // 优先使用专门的参数字段
-      const argsField = obj.arguments ?? obj.parameters ?? obj.params;
-      if (argsField && typeof argsField === "object") {
-        return argsField;
+    if (normalizedName === 'Bash' && finalArgs && typeof finalArgs === 'object') {
+      const record = finalArgs as Record<string, unknown>
+      const command = record.command ?? record.cmd
+      if (command !== undefined) {
+        finalArgs = { command: mapCommandForPlatform(String(command)) }
       }
-      // 否则，排除工具名字段后，其余字段都作为参数
-      const { [excludeKey]: _, ...rest } = obj;
-      return rest;
-    };
-    // 情况1：{ name: "ToolName", ... }
-    if (parsed.name && typeof parsed.name === "string") {
-      const args = extractArgs(parsed, "name");
-      return this.makeToolCall(parsed.name, args);
     }
-    // 情况2：{ tool: "ToolName", ... }
-    if (parsed.tool && typeof parsed.tool === "string") {
-      const args = extractArgs(parsed, "tool");
-      return this.makeToolCall(parsed.tool, args);
+
+    const toolCall: ToolCall = {
+      id: `call_${this.generateId()}_${++this.toolCallCounter}`,
+      type: 'function',
+      function: {
+        name: normalizedName,
+        arguments: typeof finalArgs === 'string' ? finalArgs : JSON.stringify(finalArgs ?? {}),
+      },
     }
-    // 情况3：{ function: "ToolName", arguments: {...} }（极少见）
-    if (parsed.function && typeof parsed.function === "string") {
-      const args = extractArgs(parsed, "function");
-      return this.makeToolCall(parsed.function, args);
+
+    logForDebugging(
+      `[ToolCallExtractor] 生成工具调用: name=${normalizedName}, args=${toolCall.function.arguments}`,
+      { level: 'debug' },
+    )
+
+    return toolCall
+  }
+
+  private inferToolNameFromArgs(args: unknown): string | null {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return null
+    const record = args as Record<string, unknown>
+
+    if (typeof record.tool === 'string') return record.tool
+    if (typeof record.name === 'string') return record.name
+    if (typeof record.function === 'string') return record.function
+
+    if (record.command !== undefined || record.cmd !== undefined) return 'Bash'
+    if (record.code !== undefined) return 'CodeInterpreter'
+    if (record.queries !== undefined || record.query !== undefined) return 'WebSearch'
+    if (record.url !== undefined || record.urls !== undefined) return 'WebExtractor'
+    if (record.file_path !== undefined || record.filePath !== undefined) return 'Read'
+
+    if (record.pattern !== undefined) {
+      if (record.path === undefined || record.path === '' || record.recursive === true) return 'Glob'
+      return 'Grep'
     }
-    // 情况4：根据参数推断工具名（兜底）
-    const inferredName = this.inferToolNameFromArgs(parsed);
-    if (inferredName) {
-      return this.makeToolCall(inferredName, parsed);
+
+    if (record.directory !== undefined || record.dir !== undefined) return 'ListFiles'
+
+    if ((record.old_string !== undefined || record.new_string !== undefined) && record.path) {
+      return 'StrReplaceEditor'
     }
-    return null;
+
+    return null
+  }
+
+  private normalizeToolCall(parsed: unknown): ToolCall | null {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const record = parsed as Record<string, unknown>
+
+    const extractArgs = (excludeKey: string): unknown => {
+      const argsField = record.arguments ?? record.parameters ?? record.params
+      if (argsField !== undefined) return argsField
+
+      const rest = { ...record }
+      delete rest[excludeKey]
+      return rest
+    }
+
+    if (typeof record.name === 'string') return this.makeToolCall(record.name, extractArgs('name'))
+    if (typeof record.tool === 'string') return this.makeToolCall(record.tool, extractArgs('tool'))
+    if (typeof record.function === 'string') {
+      return this.makeToolCall(record.function, extractArgs('function'))
+    }
+
+    const inferred = this.inferToolNameFromArgs(record)
+    return inferred ? this.makeToolCall(inferred, record) : null
   }
 
   private readBalancedJson(text: string, start: number): { json: string; end: number } | null {
-    logForDebugging(`[ToolCallExtractor] readBalancedJson 调用: start=${start}, text前50字符: ${text.slice(start, start+50)}`, { level: 'debug' });
-    let i = start;
-    while (i < text.length && /\s/.test(text[i])) i++;
-    if (i >= text.length) return null;
-    const open = text[i];
-    if (open !== '{' && open !== '[') return null;
-    const close = open === '{' ? '}' : ']';
-    let stack = 0;
-    let inString = false;
-    let escape = false;
-    for (let pos = i; pos < text.length; pos++) {
-        const ch = text[pos];
-        if (inString) {
-            if (escape) { escape = false; continue; }
-            if (ch === '\\') { escape = true; continue; }
-            if (ch === '"') { inString = false; continue; }
-            continue;
+    let index = start
+    while (index < text.length && /\s/.test(text[index])) index++
+    if (index >= text.length || (text[index] !== '{' && text[index] !== '[')) return null
+
+    const stack: string[] = []
+    let inString = false
+    let escaped = false
+
+    for (let position = index; position < text.length; position++) {
+      const char = text[position]
+
+      if (inString) {
+        if (escaped) {
+          escaped = false
+          continue
         }
-        if (ch === '"') { inString = true; continue; }
-        if (ch === open) { stack++; }
-      else if (ch === close) { stack--; if (stack === 0) return { json: text.slice(i, pos + 1), end: pos + 1 }; }
+        if (char === '\\') {
+          escaped = true
+          continue
+        }
+        if (char === '"') inString = false
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+
+      if (char === '{') stack.push('}')
+      else if (char === '[') stack.push(']')
+      else if (char === '}' || char === ']') {
+        if (stack.pop() !== char) return null
+        if (stack.length === 0) {
+          return { json: text.slice(index, position + 1), end: position + 1 }
+        }
+      }
     }
-    return null;
+
+    return null
   }
 
-  private detectBacktickCodeBlock(): { start: number; end: number; language: string; content: string } | null {
-    const text = this.buffer;
-    let i = 0;
-    while (i < text.length) {
-      if (text[i] === '`') {
-        let start = i;
-        let backtickCount = 0;
-        while (i < text.length && text[i] === '`') { backtickCount++; i++; }
-        if (backtickCount >= 3) {
-          let langStart = i;
-          while (langStart < text.length && /\s/.test(text[langStart])) langStart++;
-          let langEnd = langStart;
-          while (langEnd < text.length && /[a-zA-Z0-9_-]/.test(text[langEnd])) langEnd++;
-          const language = langEnd > langStart ? text.slice(langStart, langEnd).toLowerCase() : "";
-          let contentStart = langEnd;
-          while (contentStart < text.length && /\s/.test(text[contentStart])) contentStart++;
-          if (contentStart >= text.length) return null;
-          let j = contentStart;
-          let endBacktickStart = -1;
-          while (j < text.length) {
-            if (text[j] === '`') {
-              let cnt = 0;
-              const btStart = j;
-              while (j < text.length && text[j] === '`') { cnt++; j++; }
-              if (cnt >= 3) { endBacktickStart = btStart; break; }
-            } else { j++; }
+  private parseXmlArguments(raw: string): unknown {
+    const trimmed = raw.trim()
+    if (!trimmed) return {}
+
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      const jsonStart = trimmed.search(/[\[{]/)
+      if (jsonStart >= 0) {
+        const balanced = this.readBalancedJson(trimmed, jsonStart)
+        if (balanced) {
+          try {
+            return JSON.parse(balanced.json)
+          } catch {
+            // 继续尝试 XML 参数。
           }
-          if (endBacktickStart === -1) return null;
-          const content = text.slice(contentStart, endBacktickStart).trimEnd();
-          return { start, end: endBacktickStart + 3, language, content };
         }
-      } else { i++; }
+      }
+
+      const args: Record<string, unknown> = {}
+      const parameterPattern = /<([a-zA-Z0-9_]+)>([\s\S]*?)<\/\1>/g
+      let match: RegExpExecArray | null
+
+      while ((match = parameterPattern.exec(trimmed)) !== null) {
+        const key = match[1]
+        const value = match[2].trim()
+        if (value === 'true') args[key] = true
+        else if (value === 'false') args[key] = false
+        else if (value !== '' && !Number.isNaN(Number(value))) args[key] = Number(value)
+        else args[key] = value
+      }
+
+      return Object.keys(args).length > 0 ? args : { raw: trimmed }
     }
-    return null;
+  }
+
+  private findStructuredJsonObject(): { start: number; end: number; toolCall: ToolCall } | null {
+    for (let index = 0; index < this.buffer.length; index++) {
+      if (this.buffer[index] !== '{') continue
+      const balanced = this.readBalancedJson(this.buffer, index)
+      if (!balanced) continue
+
+      try {
+        const parsed = JSON.parse(balanced.json)
+        const toolCall = this.normalizeToolCall(parsed)
+        if (toolCall) return { start: index, end: balanced.end, toolCall }
+      } catch {
+        // 不是可识别的结构化工具调用，继续扫描。
+      }
+    }
+
+    return null
   }
 
   private findToolCall(): { start: number; end: number; toolCall: ToolCall } | null {
-    const text = this.buffer;
-    // 优先匹配 {"name": "ToolName", "arguments": {...}} 格式
-    // 正则说明：匹配以 {"name": " 开头，跨行匹配直到 } 结束的完整 JSON 对象
-    const jsonToolPattern = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/i;
-    let toolNameMatch = jsonToolPattern.exec(text);
-    if (!toolNameMatch) {
-      // 尝试匹配可能被 markdown 代码块包围的情况
-      const codeBlockPattern = /```(?:json)?\s*\r?\n?(\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\})\s*\r?\n?```/i;
-      const blockMatch = codeBlockPattern.exec(text);
-      if (blockMatch) {
-        toolNameMatch = [blockMatch[0], blockMatch[1], ...blockMatch.slice(2)];
-        toolNameMatch.index = blockMatch.index;
+    const text = this.buffer
+
+    // <tool_calling><name>...</name><arguments>...</arguments></tool_calling>
+    const toolCalling = /<tool_calling>([\s\S]*?)<\/tool_calling>/i.exec(text)
+    if (toolCalling) {
+      const inner = toolCalling[1]
+      const nameMatch = /<name>([\s\S]*?)<\/name>/i.exec(inner)
+      const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner)
+      if (nameMatch) {
+        return {
+          start: toolCalling.index,
+          end: toolCalling.index + toolCalling[0].length,
+          toolCall: this.makeToolCall(nameMatch[1].trim(), this.parseXmlArguments(argsMatch?.[1] ?? '{}')),
+        }
       }
-    }
-    if (toolNameMatch) {
-      const fullJson = toolNameMatch[0];
-      const toolName = toolNameMatch[1];
-      let argsStr = toolNameMatch[2];
-      // 确保 arguments 内部的 JSON 是平衡的（可能包含嵌套对象）
-      const balancedArgs = this.readBalancedJson(argsStr, 0);
-      if (balancedArgs) {
-        try {
-          const args = JSON.parse(balancedArgs.json);
-          logForDebugging(`[ToolCallExtractor] 匹配到工具 JSON: ${toolName}`, { level: 'debug' });
-          return {
-            start: toolNameMatch.index,
-            end: toolNameMatch.index + fullJson.length,
-            toolCall: this.makeToolCall(toolName, args),
-          };
-        } catch (e) {
-          logForDebugging(`[ToolCallExtractor] 解析 arguments 失败: ${e.message}`, { level: 'debug' });
+
+      const nested = /<tool_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i.exec(
+        inner,
+      )
+      if (nested) {
+        return {
+          start: toolCalling.index,
+          end: toolCalling.index + toolCalling[0].length,
+          toolCall: this.makeToolCall(nested[1], this.parseXmlArguments(nested[2])),
         }
       }
     }
-    // 优先匹配 {"name": "ToolName", "arguments": {...}} 格式
-    const jsonToolPattern1 = /\{\s*"name"\s*:\s*"/i;
-    const jsonToolMatch = jsonToolPattern1.exec(text);
-    if (jsonToolMatch) {
-      const start = jsonToolMatch.index;
-      const balanced = this.readBalancedJson(text, start);
-      if (balanced) {
-        try {
-          const parsed = JSON.parse(balanced.json);
-          if (parsed.name && typeof parsed.name === 'string' && parsed.arguments) {
-            return {
-              start,
-              end: balanced.end,
-              toolCall: this.makeToolCall(parsed.name, parsed.arguments),
-            };
-          }
-        } catch (e) {
-          logForDebugging(`[ToolCallExtractor] 解析工具 JSON 失败: ${e.message}`, { level: 'debug' });
-        }
-      }
-    }
-    // 优先匹配 {"tool": "ToolName", "arguments": {...}} 格式
-    const jsonToolWithToolField = /\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/i;
-    let toolMatch = jsonToolWithToolField.exec(text);
-    if (!toolMatch) {
-      // 尝试匹配可能被 markdown 代码块包围的情况
-      const codeBlockPattern = /```(?:json)?\s*\r?\n?(\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\})\s*\r?\n?```/i;
-      const blockMatch = codeBlockPattern.exec(text);
-      if (blockMatch) {
-        toolMatch = [blockMatch[0], blockMatch[1], ...blockMatch.slice(2)];
-        toolMatch.index = blockMatch.index;
-      }
-    }
-    if (toolMatch) {
-      const fullJson = toolMatch[0];
-      const toolName = toolMatch[1];
-      let argsStr = toolMatch[2];
-      const balancedArgs = this.readBalancedJson(argsStr, 0);
-      if (balancedArgs) {
-        try {
-          const args = JSON.parse(balancedArgs.json);
-          logForDebugging(`[ToolCallExtractor] 匹配到工具 JSON (tool字段): ${toolName}`, { level: 'debug' });
-          return {
-            start: toolMatch.index,
-            end: toolMatch.index + fullJson.length,
-            toolCall: this.makeToolCall(toolName, args),
-          };
-        } catch (e) {
-          logForDebugging(`[ToolCallExtractor] 解析 arguments 失败: ${e.message}`, { level: 'debug' });
-        }
-      }
-    }
-    // 模式0: 反引号代码块 (bash/cmd等)
-    const backtickBlock = this.detectBacktickCodeBlock();
-    if (backtickBlock) {
-      const { language, content, start, end } = backtickBlock;
-      if (["cmd", "bash", "Bash", "shell", "sh", "powershell", "batch", "ps1"].includes(language)) {
-        const command = content.trim();
-        if (command) {
-          return { start, end, toolCall: this.makeToolCall("bash", { command }) };
-        }
-      }
-    }
-    // 模式15: 行首命令模式（检测常见命令动词）
-    /*const commandPrefixPattern = /^\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+([^\n]*)/im;
-    const cmdMatch = commandPrefixPattern.exec(text);
-    if (cmdMatch) {
-      const command = cmdMatch[0].trim();
-      // 确保不匹配已经处理过的工具调用（避免重复）
+
+    // <tool_call name="ToolName">...</tool_call>
+    const toolCallAttribute = /<tool_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i.exec(
+      text,
+    )
+    if (toolCallAttribute) {
       return {
-        start: cmdMatch.index,
-        end: cmdMatch.index + command.length,
-        toolCall: this.makeToolCall("Bash", { command }),
-      };
+        start: toolCallAttribute.index,
+        end: toolCallAttribute.index + toolCallAttribute[0].length,
+        toolCall: this.makeToolCall(
+          toolCallAttribute[1],
+          this.parseXmlArguments(toolCallAttribute[2]),
+        ),
+      }
     }
-		*/
-    // 模式2: <tool_call name="ToolName">...</tool_call> (最重要，匹配日志中的格式)
-    const toolCallAttr = /<tool_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i.exec(text);
-    if (toolCallAttr) {
-      const toolName = toolCallAttr[1];
-      const inner = toolCallAttr[2].trim();
-      let args: any;
+
+    // <tool_call><name>...</name><arguments>...</arguments></tool_call>
+    const nestedToolCall = /<tool_call>\s*<name>([\s\S]*?)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_call>/i.exec(
+      text,
+    )
+    if (nestedToolCall) {
+      return {
+        start: nestedToolCall.index,
+        end: nestedToolCall.index + nestedToolCall[0].length,
+        toolCall: this.makeToolCall(
+          nestedToolCall[1].trim(),
+          this.parseXmlArguments(nestedToolCall[2]),
+        ),
+      }
+    }
+
+    // <tool_call>{...}</tool_call>
+    const plainToolCall = /<tool_call>([\s\S]*?)<\/tool_call>/i.exec(text)
+    if (plainToolCall) {
       try {
-        // 尝试解析内部 JSON
-        args = JSON.parse(inner);
-      } catch {
-        // 如果不是纯 JSON，可能包含其他 XML 标签，尝试提取参数
-        args = {};
-        const paramRegex = /<([a-zA-Z0-9_]+)>([\s\S]*?)<\/\1>/gi;
-        let paramMatch;
-        while ((paramMatch = paramRegex.exec(inner)) !== null) {
-          const key = paramMatch[1];
-          let value = paramMatch[2].trim();
-          if (value === "true") value = true;
-          else if (value === "false") value = false;
-          else if (!isNaN(Number(value))) value = Number(value);
-          args[key] = value;
-        }
-        if (Object.keys(args).length === 0 && inner) args = { raw: inner };
-      }
-      return {
-        start: toolCallAttr.index,
-        end: toolCallAttr.index + toolCallAttr[0].length,
-        toolCall: this.makeToolCall(toolName, args),
-      };
-    }
-		// 模式: <tool_call><name>ToolName</name><arguments>...</arguments></tool_call>
-		const toolCallNested = /<tool_call>\s*<name>([^<]+)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_call>/i.exec(text);
-		if (toolCallNested) {
-			const toolName = toolCallNested[1].trim();
-			const argsStr = toolCallNested[2].trim();
-			try {
-				const args = JSON.parse(argsStr);
-				return { start: toolCallNested.index, end: toolCallNested.index + toolCallNested[0].length, toolCall: this.makeToolCall(toolName, args) };
-			} catch {}
-		}
-  // ========== 新增模式：裸 JSON 对象，根据字段推断工具名 ==========
-    // 匹配一个完整的顶级 JSON 对象（以 { 开头，以 } 结尾）
-    const jsonObjectMatch = /^\s*(\{[\s\S]*?\})\s*([\s\S]*)$/m.exec(text);
-    if (jsonObjectMatch) {
-      const jsonStr = jsonObjectMatch[1];
-      const afterJson = jsonObjectMatch[2];
-      // 确保 JSON 是完整且平衡的
-      const balanced = this.readBalancedJson(text, text.indexOf(jsonStr));
-      if (balanced && balanced.json === jsonStr) {
-        try {
-          const args = JSON.parse(jsonStr);
-          // 根据参数推断工具名
-          const inferredName = this.inferToolNameFromArgs(args);
-          if (inferredName) {
-            // 可选：如果推断的是 grep，且参数中包含 pattern/path/output_mode 等，则确认
-            // 注意：不要求参数严格匹配，只要有合理特征就提取
-            return {
-              start: 0,
-              end: balanced.end,
-              toolCall: this.makeToolCall(inferredName, args),
-            };
+        const toolCall = this.normalizeToolCall(JSON.parse(plainToolCall[1].trim()))
+        if (toolCall) {
+          return {
+            start: plainToolCall.index,
+            end: plainToolCall.index + plainToolCall[0].length,
+            toolCall,
           }
-        } catch {}
+        }
+      } catch {
+        // 继续匹配其他格式。
       }
     }
-    // 模式5: <bash>...</bash>（修正变量错误）
-    const bashXml = /<bash>\s*\n?([\s\S]*?)\n?\s*<\/bash>/i.exec(text);
+
+    // <tool>{...}</tool>
+    const toolTag = /<tool>([\s\S]*?)<\/tool>/i.exec(text)
+    if (toolTag) {
+      try {
+        const toolCall = this.normalizeToolCall(JSON.parse(toolTag[1].trim()))
+        if (toolCall) {
+          return { start: toolTag.index, end: toolTag.index + toolTag[0].length, toolCall }
+        }
+      } catch {
+        // 继续匹配其他格式。
+      }
+    }
+
+    // <function_calls><function_call name="..."><parameter name="...">...</parameter></function_call></function_calls>
+    const functionCalls = /<function_calls>([\s\S]*?)<\/function_calls>/i.exec(text)
+    if (functionCalls) {
+      const functionCall = /<function_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/function_call>/i.exec(
+        functionCalls[1],
+      )
+      if (functionCall) {
+        const args: Record<string, unknown> = {}
+        const parameterPattern = /<parameter\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi
+        let parameterMatch: RegExpExecArray | null
+        while ((parameterMatch = parameterPattern.exec(functionCall[2])) !== null) {
+          args[parameterMatch[1]] = parameterMatch[2].trim()
+        }
+
+        return {
+          start: functionCalls.index,
+          end: functionCalls.index + functionCalls[0].length,
+          toolCall: this.makeToolCall(functionCall[1], args),
+        }
+      }
+    }
+
+    // <bash>...</bash>
+    const bashXml = /<bash>\s*([\s\S]*?)\s*<\/bash>/i.exec(text)
     if (bashXml) {
-      const inner = bashXml[1];
-      // 优先提取 <command> 子标签
-      const commandMatch = /<command>([\s\S]*?)<\/command>/i.exec(inner);
-      let command = commandMatch ? commandMatch[1].trim() : inner.trim();
-      const descMatch = /<description>([\s\S]*?)<\/description>/i.exec(inner);
-      const args: any = { command };
-      if (descMatch) args.description = descMatch[1].trim();
+      const commandMatch = /<command>([\s\S]*?)<\/command>/i.exec(bashXml[1])
+      const command = (commandMatch?.[1] ?? bashXml[1]).trim()
       if (command) {
         return {
           start: bashXml.index,
           end: bashXml.index + bashXml[0].length,
-          toolCall: this.makeToolCall("Bash", args),
-        };
-      }
-    }
-    // 模式14: 工具名: {JSON}
-    const colonJsonPattern = /^([A-Za-z][A-Za-z0-9_]*)\s*:\s*(\{[\s\S]*?\})/m;
-    const colonMatch = colonJsonPattern.exec(text);
-    if (colonMatch) {
-      const toolName = colonMatch[1];
-      const braceIdx = text.indexOf('{', colonMatch.index + colonMatch[1].length);
-      if (braceIdx !== -1) {
-        const balanced = this.readBalancedJson(text, braceIdx);
-        if (balanced) {
-          try {
-            const args = JSON.parse(balanced.json);
-            return {
-              start: colonMatch.index,
-              end: balanced.end,
-              toolCall: this.makeToolCall(toolName, args),
-            };
-          } catch {}
+          toolCall: this.makeToolCall('Bash', { command }),
         }
       }
     }
-    // 模式13: <tool_calling> 标签（包含 <name> 和 <arguments>）
-    const toolCallingTag = /<tool_calling>([\s\S]*?)<\/tool_calling>/i.exec(text);
-    if (toolCallingTag) {
-      const inner = toolCallingTag[1];
-      const nameMatch = /<name>(.*?)<\/name>/i.exec(inner);
-      const argsMatch = /<arguments>(.*?)<\/arguments>/is.exec(inner);
-      if (nameMatch && argsMatch) {
-        let toolName = nameMatch[1].trim();
-        if (toolName.includes(':')) toolName = toolName.split(':').pop() || toolName;
-        let argsStr = argsMatch[1].trim();
+
+    // Tool: Name\nArguments: {...}
+    const toolPrefix = /(?:^|\r?\n)\s*Tool:\s*([a-zA-Z0-9_:.-]+)\s*\r?\n\s*Arguments:\s*/i.exec(text)
+    if (toolPrefix) {
+      const balanced = this.readBalancedJson(text, toolPrefix.index + toolPrefix[0].length)
+      if (balanced) {
         try {
-          let args = JSON.parse(argsStr);
           return {
-            start: toolCallingTag.index,
-            end: toolCallingTag.index + toolCallingTag[0].length,
-            toolCall: this.makeToolCall(toolName, args),
-          };
+            start: toolPrefix.index,
+            end: balanced.end,
+            toolCall: this.makeToolCall(toolPrefix[1], JSON.parse(balanced.json)),
+          }
         } catch {
-          // 如果 JSON 解析失败，仍然尝试提取原始字符串作为参数（针对简单命令）
+          // JSON 不合法时继续等待后续文本或 flush。
+        }
+      }
+    }
+
+    // Action: Name\nAction Input: {...}
+    const actionPrefix = /(?:^|\r?\n)\s*Action:\s*([a-zA-Z0-9_:.-]+)\s*\r?\n\s*Action Input:\s*/i.exec(
+      text,
+    )
+    if (actionPrefix) {
+      const balanced = this.readBalancedJson(text, actionPrefix.index + actionPrefix[0].length)
+      if (balanced) {
+        try {
           return {
-            start: toolCallingTag.index,
-            end: toolCallingTag.index + toolCallingTag[0].length,
-            toolCall: this.makeToolCall(toolName, { raw: argsStr }),
-          };
+            start: actionPrefix.index,
+            end: balanced.end,
+            toolCall: this.makeToolCall(actionPrefix[1], JSON.parse(balanced.json)),
+          }
+        } catch {
+          // JSON 不合法时继续等待后续文本或 flush。
         }
       }
     }
-    // 模式11: Tool: Name\nArguments: {...}
-    const toolArgsPrefix = /\bTool:\s*([a-zA-Z0-9_:]+)\s*\nArguments:\s*/i;
-    const prefixMatch = toolArgsPrefix.exec(text);
-    if (prefixMatch) {
-      const toolName = prefixMatch[1];
-      const jsonStartIdx = prefixMatch.index + prefixMatch[0].length;
-      logForDebugging(`[ToolCallExtractor] 匹配到 Tool: 模式, toolName=${toolName}, jsonStartIdx=${jsonStartIdx}`, { level: 'debug' });
-      // 提取从 jsonStartIdx 开始的完整 JSON 对象（不使用 readBalancedJson，因为可能跨多行）
-      let jsonText = text.slice(jsonStartIdx);
-      const firstBrace = jsonText.indexOf('{');
-      if (firstBrace !== -1) {
-        jsonText = jsonText.slice(firstBrace);
-        let braceCount = 0;
-        let inString = false;
-        let escape = false;
-        let endIdx = -1;
-        for (let i = 0; i < jsonText.length; i++) {
-          const ch = jsonText[i];
-          if (inString) {
-            if (escape) escape = false;
-            else if (ch === '\\') escape = true;
-            else if (ch === '"') inString = false;
-            continue;
-          }
-          if (ch === '"') {
-            inString = true;
-            continue;
-          }
-          if (ch === '{') braceCount++;
-          if (ch === '}') {
-            braceCount--;
-            if (braceCount === 0) {
-              endIdx = i + 1;
-              break;
-            }
-          }
-        }
-        if (endIdx !== -1) {
-          const jsonCandidate = jsonText.slice(0, endIdx);
-          try {
-            const args = JSON.parse(jsonCandidate);
-            logForDebugging(`[ToolCallExtractor] 成功解析 JSON: ${JSON.stringify(args).slice(0, 200)}`, { level: 'debug' });
-            let finalToolName = toolName;
-            const lowerName = toolName.toLowerCase();
-            const knownTools = ["bash","glob","read","grep","write","edit","listfiles","web_search","code_interpreter","web_extractor","str_replace_editor"];
-            if (!knownTools.includes(lowerName)) {
-              const inferred = this.inferToolNameFromArgs(args);
-              if (inferred) finalToolName = inferred;
-              logForDebugging(`[ToolCallExtractor] 推断工具名: ${toolName} -> ${finalToolName}`, { level: 'debug' });
-            }
-            return {
-              start: prefixMatch.index,
-              end: jsonStartIdx + firstBrace + endIdx,
-              toolCall: this.makeToolCall(finalToolName, args),
-            };
-          } catch (e) {
-            logForDebugging(`[ToolCallExtractor] JSON 解析失败: ${e.message}, 候选文本: ${jsonCandidate.slice(0, 200)}`, { level: 'debug' });
-          }
-        } else {
-          logForDebugging(`[ToolCallExtractor] 未找到完整的 JSON 对象，jsonText 前200字符: ${jsonText.slice(0, 200)}`, { level: 'debug' });
-        }
-      } else {
-        logForDebugging(`[ToolCallExtractor] 在 Arguments 后面未找到 '{' 字符，jsonText 前200字符: ${jsonText.slice(0, 200)}`, { level: 'debug' });
-      }
-    }
-		const toolCallingPattern = /<tool_calling>\s*<name>([^<]+)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_calling>/i;
-		const toolCallingMatch = toolCallingPattern.exec(text);
-		if (toolCallingMatch) {
-				const toolName = toolCallingMatch[1].trim();
-				let argsStr = toolCallingMatch[2].trim();
-				// 尝试解析 JSON
-				try {
-						const args = JSON.parse(argsStr);
-						return {
-								start: toolCallingMatch.index,
-								end: toolCallingMatch.index + toolCallingMatch[0].length,
-								toolCall: this.makeToolCall(toolName, args),
-						};
-				} catch (e) {
-						// 解析失败，忽略
-				}
-		}
-    // 模式12: 嵌套 XML 工具调用 <tool_call><ToolName>...</ToolName></tool_call>
-    const nestedToolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
-    let nestedMatch;
-    while ((nestedMatch = nestedToolCallRegex.exec(text)) !== null) {
-      const fullMatch = nestedMatch[0];
-      const inner = nestedMatch[1];
-      const toolNameMatch = /<([a-zA-Z0-9_]+)>/.exec(inner);
-      if (toolNameMatch) {
-        const toolName = toolNameMatch[1];
-        const closeTag = `</${toolName}>`;
-        const closeIdx = inner.indexOf(closeTag);
-        if (closeIdx !== -1) {
-          const argsXml = inner.slice(toolNameMatch.index + toolNameMatch[0].length, closeIdx);
-          const args: Record<string, string> = {};
-          const paramRegex = /<([a-zA-Z0-9_]+)>([\s\S]*?)<\/\1>/g;
-          let paramMatch;
-          while ((paramMatch = paramRegex.exec(argsXml)) !== null) {
-            args[paramMatch[1]] = paramMatch[2].trim();
-          }
-          return {
-            start: nestedMatch.index,
-            end: nestedMatch.index + fullMatch.length,
-            toolCall: this.makeToolCall(toolName, args),
-          };
-        }
-      }
-    }
-		
- 
-    // 模式1: Calling: ToolName {...}
-    const calling = /(?:^|[\s\u25CF\u276F\-*])\bCalling:\s*(\w+)\s+/.exec(text);
+
+    // Calling: Name {...}
+    const calling = /(?:^|[\s●❯\-*])Calling:\s*([a-zA-Z0-9_:.-]+)\s+/i.exec(text)
     if (calling) {
-      const jsonStart = calling.index + calling[0].length;
-      const balanced = this.readBalancedJson(text, jsonStart);
+      const balanced = this.readBalancedJson(text, calling.index + calling[0].length)
       if (balanced) {
         try {
-          const raw = JSON.parse(balanced.json);
-          const toolName = calling[1];
-          let args: any = raw;
-          switch (toolName.toLowerCase()) {
-            case "bash":
-            case "Bash":
-              args = { command: String(raw.command ?? raw.cmd ?? "") };
-              break;
-            case "web_search":
-            case "WebSearch":
-              args = { queries: Array.isArray(raw.queries) ? raw.queries.map(String) : raw.query ? [String(raw.query)] : [] };
-              break;
-            case "code_interpreter":
-            case "CodeInterpreter":
-              args = { code: String(raw.code ?? ""), description: String(raw.description ?? "") };
-              break;
-            case "web_extractor":
-            case "WebExtractor":
-              args = { urls: Array.isArray(raw.urls) ? raw.urls.map(String) : [], goal: String(raw.goal ?? "") };
-              break;
-					  case "StrReplaceEditor":
-					  case "str_replace_editor":
-							args = {
-									command: String(raw.command ?? ""),
-									path: String(raw.path ?? raw.file_path ?? ""),
-									old_string: String(raw.old_string ?? ""),
-									new_string: String(raw.new_string ?? ""),
-									...(raw.view_range ? { view_range: raw.view_range } : {})
-							};
-							break;
-
-					// 以下工具参数通常无需转换，直接使用 raw
-					case "read":
-					case "write":
-					case "edit":
-					case "glob":
-					case "grep":
-					case "listfiles":
-							args = raw;
-							break;
+          return {
+            start: calling.index,
+            end: balanced.end,
+            toolCall: this.makeToolCall(calling[1], JSON.parse(balanced.json)),
           }
-          return { start: calling.index, end: balanced.end, toolCall: this.makeToolCall(toolName, args) };
-        } catch {}
-      }
-    }
-    // 模式2.5: <tool_call>...</tool_call> (纯 JSON)
-    const toolCallNoAttr = /<tool_call>([\s\S]*?)<\/tool_call>/i.exec(text);
-    if (toolCallNoAttr) {
-      try {
-        const inner = toolCallNoAttr[1].trim();
-        const parsed = JSON.parse(inner);
-        const tc = this.normalizeToolCall(parsed);
-        if (tc) {
-          return { start: toolCallNoAttr.index, end: toolCallNoAttr.index + toolCallNoAttr[0].length, toolCall: tc };
-        }
-      } catch {}
-    }
-    // 模式3: <tool>...</tool>
-    const toolTag = /<tool>([\s\S]*?)<\/tool>/i.exec(text);
-    if (toolTag) {
-      try {
-        const parsed = JSON.parse(toolTag[1].trim());
-        const tc = this.normalizeToolCall(parsed);
-        if (tc) {
-          return { start: toolTag.index, end: toolTag.index + toolTag[0].length, toolCall: tc };
-        }
-      } catch {}
-    }
-    // 模式4: <function_calls>...</function_calls> (XML 格式)
-    const functionCallsRegex = /<function_calls>([\s\S]*?)<\/function_calls>/gi;
-    let fcMatch;
-    while ((fcMatch = functionCallsRegex.exec(text)) !== null) {
-      const fullMatch = fcMatch[0];
-      const inner = fcMatch[1];
-      // 尝试解析 XML 格式的 <function_call>
-      const functionCallRegex = /<function_call\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/function_call>/gi;
-      let innerMatch;
-      while ((innerMatch = functionCallRegex.exec(inner)) !== null) {
-        const toolName = innerMatch[1];
-        const fcInner = innerMatch[2];
-        // 解析内部的 <parameter> 标签，提取参数名和值
-        const paramRegex = /<parameter\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
-        const args: Record<string, any> = {};
-        let paramMatch;
-        while ((paramMatch = paramRegex.exec(fcInner)) !== null) {
-          const paramName = paramMatch[1];
-          let paramValue = paramMatch[2].trim();
-          // 尝试将参数值转换为合适的类型（数字、布尔等）
-          if (paramValue === "true") paramValue = true;
-          else if (paramValue === "false") paramValue = false;
-          else if (!isNaN(Number(paramValue))) paramValue = Number(paramValue);
-          args[paramName] = paramValue;
-        }
-        if (Object.keys(args).length === 0 && fcInner.trim()) args["raw"] = fcInner.trim();
-        return {
-          start: fcMatch.index,
-          end: fcMatch.index + fullMatch.length,
-          toolCall: this.makeToolCall(toolName, args),
-        };
-      }
-      // 回退：内部为 JSON 数组
-      try {
-        const parsed = JSON.parse(inner.trim());
-        const tc = this.normalizeToolCall(Array.isArray(parsed) ? parsed[0] : parsed);
-        if (tc) {
-          return { start: fcMatch.index, end: fcMatch.index + fullMatch.length, toolCall: tc };
-        }
-      } catch {}
-    }
-    // 模式5: <bash>...</bash>
-    const bashXml1 = /<bash>\s*\n?([\s\S]*?)\n?\s*<\/bash>/i.exec(text);
-    if (bashXml1) {
-      const command = bashXml1[1].trim();
-      if (command) {
-        return {
-          start: bashXml1.index,
-          end: bashXml1.index + bashXml1[0].length,
-          toolCall: this.makeToolCall("bash", { command })
-        };
-      }
-    }
-    // 模式6: bash/shell 代码块（可选）
-    if (this.opts.enableBashCodeBlock) {
-      const bashBlock = /```(?:bash|batch|shell|sh|cmd|powershell)\s*\r?\n([\s\S]*?)\r?\n```/i.exec(text);
-      if (bashBlock) {
-        const command = bashBlock[1].trim();
-        if (command && command.split(/[\r\n]+/).length <= 2 && !/(?:#[^!]|&&|\|\||>>?|<\(|echo\s+["']|printf\s+["']|--help)/i.test(command)) {
-          return { start: bashBlock.index, end: bashBlock.index + bashBlock[0].length, toolCall: this.makeToolCall("bash", { command }) };
+        } catch {
+          // 继续匹配其他格式。
         }
       }
     }
-    // 模式7: Glob(...), Bash(...), Read(...) 等函数调用
-    const fnPattern = /\b(Glob|Bash|Read|Grep|Write|Edit|ListFiles|CodeInterpreter|WebExtractor)\s*\(/i;
-    const fn = fnPattern.exec(text);
-    if (fn) {
-      const jsonStart = fn.index + fn[0].length;
-      const balanced = this.readBalancedJson(text, jsonStart);
-      if (balanced) {
-        const afterJson = text.slice(balanced.end);
-        const closeMatch = /^\s*\)/.exec(afterJson);
-        if (closeMatch) {
-          try {
-            const args = JSON.parse(balanced.json);
-            const toolName = fn[1];
-            return { start: fn.index, end: balanced.end + closeMatch[0].length, toolCall: this.makeToolCall(toolName, args) };
-          } catch {}
-        }
-      }
-    }
-    // 模式8: ```json ... ``` 代码块
-    const jsonBlock = /```(?:json)?\s*\r?\n\s*([\[{][\s\S]*?[\]}])\s*\r?\n```/i.exec(text);
-    if (jsonBlock) {
-      try {
-        const parsed = JSON.parse(jsonBlock[1].trim());
-        const candidate = Array.isArray(parsed) ? parsed[0] : parsed;
-        const tc = this.normalizeToolCall(candidate) ?? (() => {
-          const inferred = this.inferToolNameFromArgs(candidate);
-          return inferred ? this.makeToolCall(inferred, candidate) : null;
-        })();
-        if (tc) {
-          return { start: jsonBlock.index, end: jsonBlock.index + jsonBlock[0].length, toolCall: tc };
-        }
-      } catch {}
-    }
-    // 模式9: 中文格式 [调用 ToolName] {...}
-    const chinese = /\[调用\s+(\w+)\]\s*/.exec(text);
+
+    // [调用 ToolName] {...}
+    const chinese = /\[调用\s+([^\]]+)\]\s*/.exec(text)
     if (chinese) {
-      const jsonStart = chinese.index + chinese[0].length;
-      const balanced = this.readBalancedJson(text, jsonStart);
+      const balanced = this.readBalancedJson(text, chinese.index + chinese[0].length)
       if (balanced) {
         try {
-          const args = JSON.parse(balanced.json);
-          return { start: chinese.index, end: balanced.end, toolCall: this.makeToolCall(chinese[1], args) };
-        } catch {}
-      }
-    }
-		// 增强中文格式：[调用 ToolName] {JSON}
-		const cnBracket = /\[调用\s+([^\]]+)\]\s*(\{[\s\S]*?\})/;
-		const cnMatch = cnBracket.exec(text);
-		if (cnMatch) {
-			const toolName = cnMatch[1].trim();
-			const jsonStart = cnMatch.index + cnMatch[0].indexOf('{');
-			const balanced = this.readBalancedJson(text, jsonStart);
-			if (balanced) {
-				try {
-					const args = JSON.parse(balanced.json);
-					return {
-						start: cnMatch.index,
-						end: balanced.end,
-						toolCall: this.makeToolCall(toolName, args),
-					};
-				} catch {}
-			}
-		}
-    // 模式10: 行内 JSON 对象
-    const inlineStart = text.search(/\{[\s\S]*?(?:"name"\s*:\s*"[^"]+"|"tool"\s*:\s*"[^"]+")[\s\S]*?(?:"arguments"|"parameters")/);
-    if (inlineStart >= 0) {
-      const balanced = this.readBalancedJson(text, inlineStart);
-      if (balanced) {
-        try {
-          const raw = JSON.parse(balanced.json);
-          const tc = this.normalizeToolCall(raw);
-          if (tc) {
-            return { start: inlineStart, end: balanced.end, toolCall: tc };
+          return {
+            start: chinese.index,
+            end: balanced.end,
+            toolCall: this.makeToolCall(chinese[1].trim(), JSON.parse(balanced.json)),
           }
-        } catch {}
+        } catch {
+          // 继续匹配其他格式。
+        }
       }
     }
-    // 模式16: Anthropic Action 风格
-    // 匹配 "Action: ToolName" 后跟 "Action Input: {JSON}"
-    const actionPattern = /\bAction:\s*([a-zA-Z0-9_]+)\s*\n\s*Action Input:\s*/i;
-    const actionMatch = actionPattern.exec(text);
-    if (actionMatch) {
-        const toolName = actionMatch[1];
-        const jsonStartIndex = actionMatch.index + actionMatch[0].length;
-        const balanced = this.readBalancedJson(text, jsonStartIndex);
-        if (balanced) {
-            try {
-                const args = JSON.parse(balanced.json);
-                return {
-                    start: actionMatch.index,
-                    end: balanced.end,
-                    toolCall: this.makeToolCall(toolName, args),
-                };
-            } catch (e) {
-                logForDebugging(`[ToolCallExtractor] 解析 Action Input JSON 失败: ${e.message}`, { level: 'debug' });
+
+    // Glob({...})、Bash({...}) 等函数形式。
+    const functionStyle = /\b(Glob|Bash|Read|Grep|Write|Edit|ListFiles|CodeInterpreter|WebExtractor|WebSearch|StrReplaceEditor)\s*\(/i.exec(
+      text,
+    )
+    if (functionStyle) {
+      const balanced = this.readBalancedJson(text, functionStyle.index + functionStyle[0].length)
+      if (balanced) {
+        const after = text.slice(balanced.end)
+        const close = /^\s*\)/.exec(after)
+        if (close) {
+          try {
+            return {
+              start: functionStyle.index,
+              end: balanced.end + close[0].length,
+              toolCall: this.makeToolCall(functionStyle[1], JSON.parse(balanced.json)),
             }
+          } catch {
+            // 继续匹配其他格式。
+          }
         }
+      }
     }
-    // 模式16: Anthropic Action 风格 (Action: ToolName\nAction Input: {JSON})
-    const actionPattern2 = /\bAction:\s*([a-zA-Z0-9_]+)\s*\r?\n\s*Action Input:\s*/i;
-    const actionMatch2 = actionPattern2.exec(text);
-    if (actionMatch2) {
-        const toolName2 = actionMatch2[1];
-        const jsonStartIdx = actionMatch2.index + actionMatch2[0].length;
-        const balanced = this.readBalancedJson(text, jsonStartIdx);
-        if (balanced) {
-            try {
-                const args = JSON.parse(balanced.json);
-                // 可选：对 Bash 工具进行参数规范化
-                let normalizedArgs = args;
-                if (toolName2.toLowerCase() === "bash") {
-                    normalizedArgs = { command: String(args.command ?? args.cmd ?? "") };
-                }
-                return {
-                    start: actionMatch2.index,
-                    end: balanced.end,
-                    toolCall: this.makeToolCall(toolName2, normalizedArgs),
-                };
-            } catch (e) {
-                logForDebugging(`[ToolCallExtractor] 解析 Action Input JSON 失败: ${e.message}`, { level: 'debug' });
-            }
+
+    // ToolName: {...}
+    const colonJson = /(?:^|\r?\n)\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*/m.exec(text)
+    if (colonJson) {
+      const jsonStart = colonJson.index + colonJson[0].length
+      const balanced = this.readBalancedJson(text, jsonStart)
+      if (balanced) {
+        try {
+          return {
+            start: colonJson.index,
+            end: balanced.end,
+            toolCall: this.makeToolCall(colonJson[1], JSON.parse(balanced.json)),
+          }
+        } catch {
+          // 继续匹配其他格式。
         }
+      }
     }
-    // 模式17: 最后的兜底 —— 仅当 JSON 对象包含明确的工具特征时才匹配
-    const maybeJsonMatch = /^\s*(\{[\s\S]*?\})/.exec(text);
-    if (maybeJsonMatch) {
-        const start = maybeJsonMatch.index;
-        const balanced = this.readBalancedJson(text, start);
-        if (balanced) {
-            try {
-                const args = JSON.parse(balanced.json);
-                // 检查是否具有明显的工具调用特征
-                const hasToolField = args.name || args.tool || args.function;
-                const hasTypicalToolArgs = args.command !== undefined || args.pattern !== undefined || args.code !== undefined || args.queries !== undefined;
-                if (hasToolField || hasTypicalToolArgs) {
-                    const inferredName = this.inferToolNameFromArgs(args);
-                    if (inferredName) {
-                        return { start, end: balanced.end, toolCall: this.makeToolCall(inferredName, args) };
-                    }
-                }
-            } catch {} 
+
+    // ```json {...} ```
+    const jsonCodeBlock = /```(?:json)?\s*\r?\n\s*([\[{][\s\S]*?[\]}])\s*\r?\n```/i.exec(text)
+    if (jsonCodeBlock) {
+      try {
+        const parsed = JSON.parse(jsonCodeBlock[1].trim())
+        const candidate = Array.isArray(parsed) ? parsed[0] : parsed
+        const toolCall = this.normalizeToolCall(candidate)
+        if (toolCall) {
+          return {
+            start: jsonCodeBlock.index,
+            end: jsonCodeBlock.index + jsonCodeBlock[0].length,
+            toolCall,
+          }
         }
-    } 
-		// 增强：支持 <tool_calling> 内嵌 <tool_call name="..."> 或 <tool_call> 子元素
-		const toolCallingTagEnhanced = /<tool_calling>([\s\S]*?)<\/tool_calling>/i.exec(text);
-		if (toolCallingTagEnhanced) {
-			const inner = toolCallingTagEnhanced[1];
-			let toolName: string | null = null;
-			let args: any = {};
-
-			// 尝试 <name> 标签
-			const nameMatch = /<name>([^<]*)<\/name>/i.exec(inner);
-			if (nameMatch) toolName = nameMatch[1].trim();
-
-			// 尝试 <arguments> 标签（可能包含 JSON）
-			const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
-			if (argsMatch) {
-				try { args = JSON.parse(argsMatch[1].trim()); } catch { args = {}; }
-			}
-
-			// 如果上面的都失败，尝试从 <tool_call name="..."> 属性提取
-			if (!toolName) {
-				const tcAttr = /<tool_call\s+name\s*=\s*["']([^"']+)["']/i.exec(inner);
-				if (tcAttr) toolName = tcAttr[1].trim();
-			}
-
-			// 如果还没有参数，尝试 inner 中第一个 JSON 对象作为参数
-			if (Object.keys(args).length === 0) {
-				const jsonMatch = inner.match(/\{[\s\S]*\}/);
-				if (jsonMatch) {
-					try { args = JSON.parse(jsonMatch[0]); } catch { args = {}; }
-				}
-			}
-
-			if (toolName) {
-				return {
-					start: toolCallingTagEnhanced.index,
-					end: toolCallingTagEnhanced.index + toolCallingTagEnhanced[0].length,
-					toolCall: this.makeToolCall(toolName, args),
-				};
-			}
-		}
-    return null;
-  }
-	private extractLegacy(delta: string): ExtractResult {
-    this.buffer += delta;
-    const newToolCalls: ToolCall[] = [];
-    while (true) {
-      const match = this.findToolCall();
-      if (!match) break;
-      const addedCalls = this.addOrMergeToolCall(match.toolCall);
-      newToolCalls.push(...addedCalls);
-      const key = this.getToolCallKey(match.toolCall);
-      if (!this.seenToolKeys.has(key)) {
-        this.seenToolKeys.add(key);
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
-      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-      if (this.emittedTextLen > match.start) {
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
+      } catch {
+        // 继续匹配其他格式。
       }
     }
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: newToolCalls, remaining: this.buffer };
-  }
 
-  // ========== 哨兵模式专用方法 ==========
-  private tryExtractXmlToolCall(): { name: string; argsJson: string; endIndex: number } | null {
-    const buf = this.sentinelBuffer;
-    const openIdx = buf.indexOf(this.TOOL_TAG_OPEN);
-    if (openIdx === -1) return null;
-    const closeIdx = buf.indexOf(this.TOOL_TAG_CLOSE, openIdx + this.TOOL_TAG_OPEN.length);
-    if (closeIdx === -1) return null;
-    const inner = buf.substring(openIdx + this.TOOL_TAG_OPEN.length, closeIdx);
-    const nameMatch = /<name>([\s\S]*?)<\/name>/i.exec(inner);
-    const argsMatch = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
-    if (!nameMatch || !argsMatch) return null;
-    const name = nameMatch[1].trim();
-    let argsJson = argsMatch[1].trim();
-    const jsonMatch = argsJson.match(/\{[\s\S]*\}/);
-    if (jsonMatch) argsJson = jsonMatch[0];
-    try { JSON.parse(argsJson); } catch { return null; }
-    const endIndex = closeIdx + this.TOOL_TAG_CLOSE.length;
-    logForDebugging(`[哨兵] 匹配到完整工具: name=${name}, argsJson=${argsJson.slice(0, 100)}`, { level: 'debug' });
-    return { name, argsJson, endIndex };
-  }
-
-  private isPossiblePrefix(): boolean {
-    const buf = this.sentinelBuffer;
-    if (buf.length === 0) return true;
-    if (buf[0] !== '<') return false;
-    const tag = this.TOOL_TAG_OPEN;
-    const maxLen = Math.min(buf.length, tag.length);
-    for (let i = 0; i < maxLen; i++) {
-      if (buf[i] !== tag[i]) return false;
-    }
-    if (buf.includes(this.TOOL_TAG_OPEN)) return true;
-    return true;
-  }
-  // ========== 主入口 extract：优先哨兵模式，否则使用原有逻辑 ==========
-	extract(delta: string): ExtractResult {
-		this.buffer += delta;
-		const newToolCalls: ToolCall[] = [];
-
-		while (true) {
-				const match = this.findToolCall();
-				if (!match) break;
-				const addedCalls = this.addOrMergeToolCall(match.toolCall);
-				newToolCalls.push(...addedCalls);
-				this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-				if (this.emittedTextLen > match.start) {
-						this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-				}
-		}
-
-		// ===== 修改点：从 emittedTextLen 之后找最早的前缀位置 =====
-		let safeEnd = this.buffer.length;
-		const searchFrom = this.emittedTextLen;
-		const knownPrefixes = [
-				'<tool_calling',
-				'<tool_call',
-				'Tool:',
-				'Action:',
-				'[调用',
-				'```',
-		];
-		for (const prefix of knownPrefixes) {
-				const idx = this.buffer.indexOf(prefix, searchFrom);
-				if (idx !== -1 && idx < safeEnd) {
-						safeEnd = idx;          // 截断到该前缀之前
-				}
-		}
-
-		const newText = this.buffer.slice(this.emittedTextLen, safeEnd);
-		this.emittedTextLen = safeEnd;
-
-		return {
-				text: newText,
-				toolCalls: newToolCalls,
-				remaining: this.buffer.slice(safeEnd),   // 保留潜在前缀，等下一次 extract
-		};
-	}
-  /**
-   * flush 方法：强制结束哨兵模式
-   */
-	public flush(): ExtractResult {
-			// 最后一次尝试提取
-			const finalResult = this.extract('');
-
-			// 获取尚未输出的残留内容
-			let remainingText = this.buffer.slice(this.emittedTextLen);
-
-			// ===== 修改点：丢弃不完整的工具调用前缀 =====
-			const prefixIdx = remainingText.search(
-					/<tool_calling|<tool_call|Tool:|Action:|\[调用|```/
-			);
-			if (prefixIdx !== -1) {
-					// 只保留前缀之前的安全文本
-					remainingText = remainingText.substring(0, prefixIdx);
-			}
-
-			this.buffer = '';
-			this.emittedTextLen = 0;
-
-			// 合并所有未产出的工具调用
-			const allToolCalls = [...finalResult.toolCalls];
-			for (const [key, tc] of this.pendingToolCalls) {
-					if (!this.emittedToolKeys.has(key)) {
-							allToolCalls.push(tc);
-							this.emittedToolKeys.add(key);
-					}
-			}
-
-			this.reset();
-			return {
-					text: finalResult.text + remainingText,
-					toolCalls: allToolCalls,
-					remaining: '',
-			};
-	}
-/*
-  extract1(delta: string): ExtractResult {
-    this.buffer += delta;
-    const found: ToolCall[] = [];
-    while (true) {
-      const match = this.findToolCall();
-      if (!match) break;
-      const key = `${match.toolCall.function.name}:${match.toolCall.function.arguments}`;
-      if (!this.seenToolKeys.has(key)) {
-        this.seenToolKeys.add(key);
-        found.push(match.toolCall);
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
-      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-      if (this.emittedTextLen > match.start) {
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-      }
-    }
-    // 关键修改：移除此处的回退全文提取逻辑，只返回本次可输出的纯文本
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: found, remaining: tflushhis.buffer };
-  }
-	
-  // 修改 extract 方法，使用合并逻辑
-  extract(delta: string): ExtractResult {
-    this.buffer += delta;
-    const newToolCalls: ToolCall[] = [];
-    
-    while (true) {
-      const match = this.findToolCall();
-      if (!match) break;
-      
-      // 使用合并逻辑替代直接去重
-      const addedCalls = this.addOrMergeToolCall(match.toolCall);
-      newToolCalls.push(...addedCalls);
-      
-      // 记录已处理的工具调用（用于跨多次 extract 调用的去重）
-      const key = this.getToolCallKey(match.toolCall);
-      if (!this.seenToolKeys.has(key)) {
-        logForDebugging(`[ToolCallExtractor] 提取工具调用成功: name=${match.toolCall.function.name}, arguments=${match.toolCall.function.arguments}`, { level: 'debug' });
-        this.seenToolKeys.add(key);
-      } else {
-        logForDebugging(`[ToolCallExtractor] 跳过重复工具调用: ${key}`, { level: 'debug' });
-      }
-      
-      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end);
-      if (this.emittedTextLen > match.start) {
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-      }
-    }
-    
-    const newText = this.buffer.slice(this.emittedTextLen);
-    this.emittedTextLen = this.buffer.length;
-    return { text: newText, toolCalls: newToolCalls, remaining: this.buffer };
-  }*/
-	  /**
-   * 核心提取方法：使用哨兵模式处理流式输入
-   */
-  /*
-	extract(delta: string): ExtractResult {
-    // 如果处于哨兵模式，继续累积
-    if (this.sentinelActive) {
-      this.sentinelBuffer += delta;
-      const complete = this.tryExtractCompleteToolCall();
-      if (complete) {
-        // 成功提取工具调用，退出哨兵模式
-        this.sentinelActive = false;
-        const { name, argsJson, endIndex } = complete;
-        const remaining = this.sentinelBuffer.slice(endIndex);
-        this.sentinelBuffer = "";
-
-        // 构造工具调用
-        let argsObj: any;
-        try { argsObj = JSON.parse(argsJson); } catch { argsObj = {}; }
-        const toolCall = this.makeToolCall(name, argsObj);
-        // 通过合并逻辑处理重复/合并
-        const addedCalls = this.addOrMergeToolCall(toolCall);
-        // 如果有剩余内容，递归处理（可能包含多个工具调用或普通文本）
-        let extraResult: ExtractResult = { text: "", toolCalls: [], remaining: "" };
-        if (remaining) {
-          extraResult = this.extract(remaining);
+    // 可选：将 bash/cmd 代码块解释为真实工具调用。
+    if (this.opts.enableBashCodeBlock) {
+      const bashCodeBlock = /```(?:bash|batch|shell|sh|cmd|powershell|ps1)\s*\r?\n([\s\S]*?)\r?\n```/i.exec(
+        text,
+      )
+      if (bashCodeBlock) {
+        const command = bashCodeBlock[1].trim()
+        if (command) {
+          return {
+            start: bashCodeBlock.index,
+            end: bashCodeBlock.index + bashCodeBlock[0].length,
+            toolCall: this.makeToolCall('Bash', { command }),
+          }
         }
+      }
+    }
+
+    // 结构化 JSON 对象，根据 name/tool/function 或典型参数推断工具名。
+    const structuredJson = this.findStructuredJsonObject()
+    if (structuredJson) return structuredJson
+
+    // 可选：裸命令行。默认禁用。
+    if (this.opts.enableBareCommandLine) {
+      const bareCommand = /(?:^|\r?\n)\s*(?:findstr|cd|dir|git|grep|ls|pwd|echo|cat|head|tail|wc|sort|uniq|awk|sed|tar|zip|unzip|chmod|chown|ps|kill|rm|cp|mv|mkdir|rmdir|touch|which|where|type)\s+[^\r\n]*/im.exec(
+        text,
+      )
+      if (bareCommand) {
+        const command = bareCommand[0].trim()
         return {
-          text: extraResult.text,
-          toolCalls: [...addedCalls, ...extraResult.toolCalls],
-          remaining: extraResult.remaining
-        };
-      } else if (!this.isPossiblePrefix()) {
-        // 不可能匹配，退出哨兵模式，将已累积的全部作为普通文本输出
-        this.sentinelActive = false;
-        const text = this.sentinelBuffer;
-        this.sentinelBuffer = "";
-        return { text, toolCalls: [], remaining: "" };
-      } else {
-        // 还在等待更多数据，暂不输出任何内容
-        return { text: "", toolCalls: [], remaining: "" };
-      }
-    } else {
-      // 正常模式：扫描 delta 中的 '<' 字符
-      let resultText = "";
-      let resultToolCalls: ToolCall[] = [];
-      let remainingDelta = delta;
-
-      while (remainingDelta.length > 0) {
-        const ltIndex = remainingDelta.indexOf('<');
-        if (ltIndex === -1) {
-          // 没有 '<'，全部为普通文本
-          resultText += remainingDelta;
-          break;
-        } else {
-          // 输出 '<' 之前的文本
-          if (ltIndex > 0) {
-            resultText += remainingDelta.slice(0, ltIndex);
-          }
-          // 从 '<' 开始进入哨兵模式
-          this.sentinelActive = true;
-          this.sentinelBuffer = remainingDelta.slice(ltIndex);
-          // 递归调用 extract 处理哨兵模式（传入空字符串，因为当前哨兵缓冲区已设置）
-          const subResult = this.extract("");
-          resultText += subResult.text;
-          resultToolCalls.push(...subResult.toolCalls);
-          // 如果 subResult.remaining 非空，继续循环
-          remainingDelta = subResult.remaining;
+          start: bareCommand.index,
+          end: bareCommand.index + bareCommand[0].length,
+          toolCall: this.makeToolCall('Bash', { command }),
         }
       }
-
-      // 更新原有的 emittedTextLen 和 buffer（为了兼容旧逻辑，可以忽略或同步）
-      this.emittedTextLen = this.buffer.length; // 可选，保留原有状态
-      return { text: resultText, toolCalls: resultToolCalls, remaining: "" };
     }
+
+    return null
   }
-  // 辅助方法：生成字符串的简单哈希值（用于去重 key）
-  private hashCode(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const chr = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0; // 转为 32 位整数
-    }
-    return Math.abs(hash).toString(16);
-  }
-  /*flush(): ExtractResult {
-    // 尝试从当前 buffer 中再次匹配工具调用（此时所有 chunk 已到齐）
-    const toolCalls: ToolCall[] = [];
-    let remaining = this.buffer;
-    let modified = false;
-    while (true) {
-        // 临时将 buffer 替换为 remaining 进行匹配
-        const savedBuffer = this.buffer;
-        this.buffer = remaining;
-        const match = this.findToolCall();
-        this.buffer = savedBuffer;
-        if (!match) break;
-        toolCalls.push(match.toolCall);
-        remaining = remaining.slice(0, match.start) + remaining.slice(match.end);
-        modified = true;
-    }
-    if (modified) {
-        this.buffer = remaining;
-        this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-    }
-    // 剩余的作为普通文本输出，不生成 extract_full_text
-    const finalText = this.buffer;
-    this.buffer = "";
-    this.emittedTextLen = 0;
-    return { text: finalText, toolCalls, remaining: "" };
-  }
-
-  // 修改 flush 方法，清空合并缓冲区
-  flush(): ExtractResult {
-    // 先处理当前 buffer 中的工具调用
-    const toolCalls: ToolCall[] = [];
-    let remaining = this.buffer;
-    let modified = false;
-
-    while (true) {
-      const savedBuffer = this.buffer;
-      this.buffer = remaining;
-      const match = this.findToolCall();
-      this.buffer = savedBuffer;
-      if (!match) break;
-
-      const addedCalls = this.addOrMergeToolCall(match.toolCall);
-      toolCalls.push(...addedCalls);
-      remaining = remaining.slice(0, match.start) + remaining.slice(match.end);
-      modified = true;
-    }
-
-    if (modified) {
-      this.buffer = remaining;
-      this.emittedTextLen = Math.min(this.emittedTextLen, this.buffer.length);
-    }
-
-    // 只产出尚未产出过的工具调用（正常情况下都应该已经产出过，因为 extract() 中已产出）
-    // 但如果 buffer 中有工具调用从未被 extract() 完整识别，这里会作为兜底产出
-    const finalToolCalls: ToolCall[] = [];
-    for (const [key, tc] of this.pendingToolCalls) {
-      if (!this.emittedToolKeys.has(key)) {
-        finalToolCalls.push(tc);
-        this.emittedToolKeys.add(key);
-        logForDebugging(`[ToolCallExtractor] flush 中兜底产出工具调用: ${key}`, { level: 'debug' });
-      }
-    }
-    const finalText = this.buffer;
-
-    // 清空所有状态
-    this.buffer = "";
-    this.emittedTextLen = 0;
-    this.toolCallCounter = 0;
-    this.seenToolKeys.clear();
-    this.pendingToolCalls.clear();
-    this.emittedToolKeys.clear();
-
-    return { text: finalText, toolCalls: finalToolCalls, remaining: "" };
-  }*/
-
 
   /**
-   * flush 方法：强制结束哨兵模式，将剩余内容作为普通文本输出
-   
-  flush(): ExtractResult {
-    if (this.sentinelActive) {
-      // 强制退出哨兵模式，剩余内容全部作为普通文本
-      const text = this.sentinelBuffer;
-      this.sentinelActive = false;
-      this.sentinelBuffer = "";
-      // 同时清空原有 buffer 相关状态（避免冲突）
-      this.buffer = "";
-      this.emittedTextLen = 0;
-      return { text, toolCalls: [], remaining: "" };
-    }
-    // 原有的 flush 逻辑可以保留，但为了简化，直接调用新逻辑
-    // 注意：原有 flush 中处理了 pendingToolCalls，这里需要合并处理
-    const finalToolCalls: ToolCall[] = [];
-    for (const [key, tc] of this.pendingToolCalls) {
-      if (!this.emittedToolKeys.has(key)) {
-        finalToolCalls.push(tc);
-        this.emittedToolKeys.add(key);
+   * 找出尚不能安全输出的尾部起点。
+   * 只保留可能跨 chunk 补全为工具调用的尾部，不会全局截断普通 Tool:/Action: 文本。
+   */
+  private findPendingPrefixStart(): number {
+    const unread = this.buffer.slice(this.emittedTextLen)
+    if (!unread) return this.buffer.length
+
+    const candidates: number[] = []
+    const lowerUnread = unread.toLowerCase()
+
+    const xmlMarkers: Array<{ open: string; close: string }> = [
+      { open: '<tool_calling', close: '</tool_calling>' },
+      { open: '<tool_call', close: '</tool_call>' },
+      { open: '<function_calls', close: '</function_calls>' },
+      { open: '<bash>', close: '</bash>' },
+    ]
+
+    for (const marker of xmlMarkers) {
+      const index = lowerUnread.lastIndexOf(marker.open)
+      if (index >= 0 && lowerUnread.indexOf(marker.close, index) === -1) {
+        candidates.push(this.emittedTextLen + index)
       }
     }
-    const finalText = this.buffer;
-    this.reset();
-    return { text: finalText, toolCalls: finalToolCalls, remaining: "" };
-  }*/
 
-  public reset(): void {
-    this.inSentinel = false;
-    this.sentinelBuffer = "";
-    this.toolCallCounter = 0;
-    this.pendingToolCalls.clear();
-    this.emittedToolKeys.clear();
-    this.emittedText = "";
+    const protocolTail = /(?:^|\r?\n)\s*(?:Tool:\s*[A-Za-z0-9_:.-]*\s*(?:\r?\n\s*(?:Arguments:\s*)?(?:[\[{][\s\S]*)?)?|Action:\s*[A-Za-z0-9_:.-]*\s*(?:\r?\n\s*(?:Action Input:\s*)?(?:[\[{][\s\S]*)?)?|Calling:\s*[A-Za-z0-9_:.-]*\s*(?:[\[{][\s\S]*)?|\[调用\s+[^\]]*\]?\s*(?:[\[{][\s\S]*)?)$/i.exec(
+      unread,
+    )
+
+    if (protocolTail) {
+      candidates.push(this.emittedTextLen + protocolTail.index)
+    }
+
+    // 跨 chunk 的短前缀，例如 "<tool_ca"、"Act"。
+    const prefixes = [
+      '<tool_calling',
+      '<tool_call',
+      '<function_calls',
+      '<bash>',
+      'Tool:',
+      'Action:',
+      'Calling:',
+      '[调用',
+    ]
+    const maxPrefixLength = Math.max(...prefixes.map(prefix => prefix.length))
+
+    for (
+      let index = Math.max(0, unread.length - maxPrefixLength + 1);
+      index < unread.length;
+      index++
+    ) {
+      const suffix = unread.slice(index).toLowerCase()
+      if (prefixes.some(prefix => prefix.toLowerCase().startsWith(suffix))) {
+        candidates.push(this.emittedTextLen + index)
+        break
+      }
+    }
+
+    return candidates.length > 0 ? Math.min(...candidates) : this.buffer.length
+  }
+
+  extract(delta: string): ExtractResult {
+    // 已输出文本不再参与后续扫描，避免重复解释或重复输出。
+    if (this.emittedTextLen > 0) {
+      this.buffer = this.buffer.slice(this.emittedTextLen)
+      this.emittedTextLen = 0
+    }
+
+    this.buffer += delta
+    const toolCalls: ToolCall[] = []
+
+    while (true) {
+      const match = this.findToolCall()
+      if (!match) break
+
+      toolCalls.push(...this.addIfNew(match.toolCall))
+      this.buffer = this.buffer.slice(0, match.start) + this.buffer.slice(match.end)
+    }
+
+    const safeEnd = this.findPendingPrefixStart()
+    const text = this.buffer.slice(0, safeEnd)
+    this.emittedTextLen = safeEnd
+
+    return {
+      text,
+      toolCalls,
+      remaining: this.buffer.slice(safeEnd),
+    }
+  }
+
+  /**
+   * 流结束时释放所有安全文本。
+   * 不再丢弃不完整工具前缀；否则 UI 会表现为回答尾部消失。
+   */
+  flush(): ExtractResult {
+    const finalResult = this.extract('')
+    const remainingText = this.buffer.slice(this.emittedTextLen)
+    this.reset()
+
+    return {
+      text: finalResult.text + remainingText,
+      toolCalls: finalResult.toolCalls,
+      remaining: '',
+    }
+  }
+
+  reset(): void {
+    this.buffer = ''
+    this.emittedTextLen = 0
+    this.toolCallCounter = 0
+    this.emittedToolKeys.clear()
   }
 }

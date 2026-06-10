@@ -3,25 +3,23 @@ import type { LocalJSXCommandCall } from '../../types/command.js'
 import { Box, Text } from '../../ink.js'
 import * as React from 'react'
 
-function maskSensitive(value: string): string {
-  if (value.length > 8 && /[A-Z0-9]/.test(value)) {
-    return value.slice(0, 4) + '***' + value.slice(-4)
-  }
-  return value
-}
-
 export const call: LocalJSXCommandCall = async () => {
-  const importantVars = ['NODE_ENV', 'PATH', 'HOME', 'USER', 'CLAUDE_CODE_SESSION_ID', 'ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'USER_TYPE']
-  const envVars = importantVars.map(name => ({ name, value: process.env[name] || '（未设置）' }))
+  const envVars = [
+    { name: 'ANTHROPIC_BASE_URL', value: process.env.ANTHROPIC_BASE_URL || '（未设置）' },
+    { name: 'ANTHROPIC_MODEL', value: process.env.ANTHROPIC_MODEL || '（未设置）' },
+    { name: 'DOGE_API_KEY', value: process.env.DOGE_API_KEY ? '***（已设置）***' : '（未设置）' },
+    { name: 'CLAUDE_CODE_SESSION_ID', value: process.env.CLAUDE_CODE_SESSION_ID || '（未设置）' },
+    { name: 'USER_TYPE', value: process.env.USER_TYPE || '（未设置）' },
+  ]
 
   return (
     <Box flexDirection="column" padding={1}>
       <Text bold>🔧 环境变量</Text>
-      <Box marginTop={1} flexDirection="column">
+      <Box flexDirection="column" marginTop={1}>
         {envVars.map(({ name, value }) => (
           <Box key={name}>
             <Text color="cyan">{name}: </Text>
-            <Text>{name.includes('KEY') || name.includes('TOKEN') ? maskSensitive(value) : value}</Text>
+            <Text>{value}</Text>
           </Box>
         ))}
       </Box>

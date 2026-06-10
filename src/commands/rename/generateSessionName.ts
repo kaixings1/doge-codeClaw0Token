@@ -15,7 +15,7 @@ export async function generateSessionName(
   if (!conversationText) {
     return null
   }
-
+ return { title: "New Chat" };
   try {
     const result = await queryHaiku({
       systemPrompt: asSystemPrompt([

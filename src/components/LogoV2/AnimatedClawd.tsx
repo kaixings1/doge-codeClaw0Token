@@ -2,7 +2,6 @@ import { c as _c } from "react/compiler-runtime";
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { Box } from '../../ink.js';
-import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { getInitialSettings } from '../../utils/settings/settings.js';
 import { Clawd, type ClawdPose } from './Clawd.js';
 
@@ -50,12 +49,10 @@ const incrementFrame = (i: number) => i + 1;
 const CLAWD_HEIGHT = 7; // 与 Clawd 组件图形高度一致
 
 export function AnimatedClawd() {
-  const columns = useTerminalSize().columns;
   const $ = _c(8);
-  const { pose, bounceOffset, onClick } = useClawdAnimation(columns);
+  const { pose, bounceOffset, onClick } = useClawdAnimation();
+  console.log('[AnimatedClawd] Rendering with pose=', pose);
 
-  // Debug: 确认组件是否被Renderer
-  console.debug('[AnimatedClawd] Rendered, pose:', pose, 'bounceOffset:', bounceOffset);
 
   let t0;
   if ($[0] !== pose) {
@@ -92,71 +89,53 @@ export function AnimatedClawd() {
   return t2;
 }
 
-function useClawdAnimation(columns: number) {
+function useClawdAnimation() {
   const [reducedMotion] = useState(() => getInitialSettings().prefersReducedMotion ?? false);
   const [frameIndex, setFrameIndex] = useState(0); // 始终运行帧序列
   const sequenceRef = useRef<readonly Frame[]>(IDLE_LOOP);
   const clickLockRef = useRef(false);
 
-  // 计算跳动幅度：基于终端宽度，最大跳动 20% 的高度
-  const bounceOffset = Math.max(1, Math.min(20, columns / 5));
 
   const onClick = () => {
-    if (reducedMotion || clickLockRef.current) return;
+    console.log('[AnimatedClawd] onClick called, reducedMotion=', reducedMotion, 'clickLock=', clickLockRef.current);
+    if (reducedMotion || clickLockRef.current) {
+      console.log('[AnimatedClawd] onClick blocked');
+      return;
+    }
     clickLockRef.current = true;
     const anim = CLICK_ANIMATIONS[Math.floor(Math.random() * CLICK_ANIMATIONS.length)]!;
     sequenceRef.current = anim;
     setFrameIndex(0);
+    console.log('[AnimatedClawd] Click animation started');
   };
 
 useEffect(() => {
-    if (reducedMotion) return;
+    console.log('[AnimatedClawd] useEffect running, frameIndex=', frameIndex, 'reducedMotion=', reducedMotion);
 
-    // 使用链式 setTimeout 实现动画循环，每次状态更新后设置**新的 timer**
-    // 确保每次 timer 都 capture 最新的状态值
-    const runFrame = () => {
-      if (reducedMotion) return;
-
-      // Debug: 确认动画循环是否真正运行
-      console.debug('[AnimatedClawd] Animation frame running, reducedMotion:', reducedMotion);
-
-      setFrameIndex(prevIndex => {
-        const nextIndex = prevIndex + 1;
-        if (nextIndex >= sequenceRef.current.length) {
-            // 动画结束，恢复 idle 循环
-            sequenceRef.current = IDLE_LOOP;
-            clickLockRef.current = false;
-            return 0; // 返回新索引，下 frame 从 0 开始
-        }
-        return nextIndex;
-      });
-
-      // 每次状态更新后，设置**新的 timer**，创建新的闭包以 capture 最新状态
-      if (!reducedMotion) {
-        setTimeout(runFrame, FRAME_MS);
-      }
-    };
-
-    // 初始 timer
-    const initialTimer = setTimeout(runFrame, FRAME_MS);
-
-    // 清理函数
-    return () => clearTimeout(initialTimer);
-  }, [reducedMotion]); // 仅依赖 reducedMotion
-
-
-
-  // 当 reducedMotion 变化时，重置动画状态
-  useEffect(() => {
     if (reducedMotion) {
-      // 如果用户启用了减少运动模式，立即停止动画
+      console.log('[AnimatedClawd] reducedMotion enabled, skipping animation');
+      return;
+    }
+
+    if (frameIndex >= sequenceRef.current.length) {
+            // 动画结束，恢复 idle 循环
+
+
+
+
+
+
       sequenceRef.current = IDLE_LOOP;
       setFrameIndex(0);
       clickLockRef.current = false;
+      return;
     }
-  }, [reducedMotion]);
+    const timer = setTimeout(() => setFrameIndex(incrementFrame), FRAME_MS);
+    return () => clearTimeout(timer);
+  }, [frameIndex, reducedMotion]);
 
   const currentFrame = sequenceRef.current[frameIndex] ?? { pose: 'default', offset: 0 };
+  console.log('[useClawdAnimation] Returning pose=', currentFrame.pose, 'frameIndex=', frameIndex, 'sequenceLength=', sequenceRef.current.length);
   return {
     pose: currentFrame.pose,
     bounceOffset: currentFrame.offset,

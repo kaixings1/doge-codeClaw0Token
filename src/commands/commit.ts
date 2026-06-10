@@ -1,153 +1,92 @@
-import type { Command, LocalCommandCall } from '../types/command.js'
-import { gitExe } from '../utils/git.js'
-import { execFileNoThrow } from '../utils/execFileNoThrow.js'
+import type { Command } from '../commands.js'
+import { getAttributionTexts } from '../utils/attribution.js'
+import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
+import { getUndercoverInstructions, isUndercover } from '../utils/undercover.js'
 
-/**
- * 解析 commit 命令参数
- * 支持的格式：
- *   /commit -m "message" [file1 file2 ...]
- *   /commit "message" [file1 file2 ...]
- */
-function parseCommitArgs(args: string): { message: string; files: string[] } {
-  let message = ''
-  let files: string[] = []
+const ALLOWED_TOOLS = [
+  'Bash(git add:*)',
+  'Bash(git status:*)',
+  'Bash(git commit:*)',
+]
 
-  // 尝试解析 -m 标志
-  const mFlagMatch = args.match(/-m\s+["']([^"']+)["']/)
-  if (mFlagMatch) {
-    message = mFlagMatch[1]
-    // 从参数中移除 -m 部分，剩下的作为文件列表
-    const remaining = args.replace(/-m\s+["'][^"']+["']/, '').trim()
-    files = remaining
-      .split(/\s+/)
-      .filter(f => f && !f.startsWith('-'))
-  } else {
-    // 第一个引号内的内容作为消息，或者第一段作为消息
-    const quotedMatch = args.match(/["']([^"']+)["']/)
-    if (quotedMatch) {
-      message = quotedMatch[1]
-      const remaining = args.replace(/["'][^"']+["']/, '').trim()
-      files = remaining
-        .split(/\s+/)
-        .filter(f => f && !f.startsWith('-'))
-    } else {
-      // 无引号消息：第一个词作为消息
-      const parts = args.trim().split(/\s+/)
-      if (parts.length > 0) {
-        message = parts[0]
-        files = parts.slice(1).filter(f => !f.startsWith('-'))
-      }
-    }
+function getPromptContent(): string {
+  const { commit: commitAttribution } = getAttributionTexts()
+
+  let prefix = ''
+  if (process.env.USER_TYPE === 'ant' && isUndercover()) {
+    prefix = getUndercoverInstructions() + '\n'
   }
 
-  return { message, files }
+  return `${prefix}## Context
+
+- 当前 git 状态: !\`git status\`
+- 当前 git diff（已暂存和未暂存的更改）: !\`git diff HEAD\`
+- 当前分支: !\`git branch --show-current\`
+- 最近的提交: !\`git log --oneline -10\`
+
+## Git 安全协议
+
+- 绝不更新 git 配置
+- 绝不跳过钩子（--no-verify、--no-gpg-sign 等），除非用户明确要求
+- 关键：始终创建新的提交。绝不使用 git commit --amend，除非用户明确要求
+- 不要提交可能包含秘密的文件（.env、credentials.json 等）。如果用户特别要求提交这些文件，则警告用户
+- 如果没有要提交的更改（即没有未跟踪的文件和没有修改），不要创建空提交
+- 绝不使用带 -i 标志的 git 命令（如 git rebase -i 或 git add -i），因为它们需要交互式输入，而这是不支持的
+
+## 你的任务
+
+基于上述更改，创建单个 git 提交：
+
+1. 分析所有已暂存的更改并起草提交消息：
+   - 查看最近上面的提交，以遵循此仓库的提交消息风格
+   - 总结更改的性质（新功能、增强、错误修复、重构、测试、文档等）
+   - 确保消息准确反映更改及其目的（即 "add" 表示全新的功能，"update" 表示对现有功能的增强，"fix" 表示错误修复等）
+   - 起草简洁（1-2 句话）的提交消息，重点关注"为什么"而不是"是什么"
+
+2. 暂存相关文件并使用 HEREDOC 语法创建提交：
+\`\`\`
+git commit -m "$(cat <<'EOF'
+提交消息在这里。${commitAttribution ? `\n\n${commitAttribution}` : ''}
+EOF
+)"
+\`\`\`
+
+你具有在单个响应中调用多个工具的能力。在一条消息中暂存文件并创建提交。不要使用任何其他工具或做任何其他事情。除了这些工具调用外，不要发送任何其他文本或消息。`
 }
 
-const call: LocalCommandCall = async (args, context) => {
-  // 如果没有参数，显示帮助信息
-  if (!args.trim()) {
-    return {
-      type: 'text',
-      value: `用法：/commit <消息> [文件...]
-      或 /commit -m "<消息>" [文件...]
-
-示例：
-  /commit "修复登录 bug"
-  /commit -m "添加新功能" src/index.ts
-  /commit "更新文档" README.md docs/
-
-选项：
-  -m <消息>  - 指定提交消息
-
-如果没有提供文件，将提交所有已暂存的更改。
-要查看当前状态，请运行 /status。`,
-    }
-  }
-
-  const { message, files } = parseCommitArgs(args)
-
-  if (!message) {
-    return {
-      type: 'text',
-      value: '错误：必须提供提交消息。\n使用 /commit "你的消息"',
-    }
-  }
-
-  try {
-    // 1. 如果有指定文件，添加它们
-    if (files.length > 0) {
-      const addArgs = ['add', ...files]
-      const { code: addCode, stderr: addStderr } = await execFileNoThrow(
-        gitExe(),
-        addArgs,
-        { preserveOutputOnError: false },
-      )
-
-      if (addCode !== 0) {
-        return {
-          type: 'text',
-          value: `添加文件失败：\n${addStderr || '未知错误'}`,
-        }
-      }
-    }
-
-    // 2. 检查是否有更改需要提交
-    const { stdout: statusStdout } = await execFileNoThrow(
-      gitExe(),
-      ['status', '--porcelain'],
-      { preserveOutputOnError: false },
-    )
-
-    if (!statusStdout.trim()) {
-      return {
-        type: 'text',
-        value: '没有要提交的更改。使用 /status 查看当前状态。',
-      }
-    }
-
-    // 3. 执行提交
-    const commitArgs = ['commit', '-m', message]
-    const { code: commitCode, stdout: commitStdout, stderr: commitStderr } =
-      await execFileNoThrow(gitExe(), commitArgs, {
-        preserveOutputOnError: false,
-      })
-
-    if (commitCode !== 0) {
-      return {
-        type: 'text',
-        value: `提交失败：\n${commitStderr || commitStdout || '未知错误'}`,
-      }
-    }
-
-    // 4. 获取新提交的 hash
-    const { stdout: hashStdout } = await execFileNoThrow(
-      gitExe(),
-      ['rev-parse', 'HEAD'],
-      { preserveOutputOnError: false },
-    )
-
-    const commitHash = hashStdout.trim().substring(0, 7)
-
-    return {
-      type: 'text',
-      value: `✓ 提交成功 [${commitHash}]\n消息：${message}\n文件：${files.length > 0 ? files.join(', ') : '所有暂存更改'}`,
-    }
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error)
-    return {
-      type: 'text',
-      value: `执行失败：${errorMsg}`,
-    }
-  }
-}
-
-const commit: Command = {
-  type: 'local',
+const command = {
+  type: 'prompt',
   name: 'commit',
   description: '创建 git 提交',
-  argumentHint: '[-m] <消息> [文件...]',
-  supportsNonInteractive: true,
-  load: () => Promise.resolve({ call }),
-}
+  allowedTools: ALLOWED_TOOLS,
+  contentLength: 0, // Dynamic content
+  progressMessage: '正在创建提交',
+  source: 'builtin',
+  async getPromptForCommand(_args, context) {
+    const promptContent = getPromptContent()
+    const finalContent = await executeShellCommandsInPrompt(
+      promptContent,
+      {
+        ...context,
+        getAppState() {
+          const appState = context.getAppState()
+          return {
+            ...appState,
+            toolPermissionContext: {
+              ...appState.toolPermissionContext,
+              alwaysAllowRules: {
+                ...appState.toolPermissionContext.alwaysAllowRules,
+                command: ALLOWED_TOOLS,
+              },
+            },
+          }
+        },
+      },
+      '/commit',
+    )
 
-export default commit
+    return [{ type: 'text', text: finalContent }]
+  },
+} satisfies Command
+
+export default command

@@ -2453,7 +2453,23 @@ cleanedBase = cleanedBase.replace(/\/v1\/?$/, '');
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+//这里是自己加的
+        // 检查是否有工具调用 - 如果有工具调用，则继续等待而不是抛出错误
+        const hasToolCall = newMessages.some(msg => {
+          if (msg.message?.content && Array.isArray(msg.message.content)) {
+            return msg.message.content.some((block: any) => block.type === 'tool_use')
+          }
+          return false
+        })
+        if (hasToolCall) {
+          // 有工具调用，继续等待用户输入
+          logForDebugging('流结束但有未完成的工具调用 - 等待用户输入', { level: 'warn' })
+          // 正常返回已收集的消息
+        } else {
+          // 没有工具调用且没有完整消息，抛出错误
         throw new Error('流结束但未收到任何事件')
+        }
+//------------自己加的	
       }
 
       // 如果在流式传输过程中发生任何停顿，则记录摘要
@@ -3309,6 +3325,13 @@ export async function queryHaiku({
   signal: AbortSignal
   options: HaikuOptions
 }): Promise<AssistantMessage> {
+	console.error("[queryHaiku] 被调用，堆栈：", new Error().stack);
+	  console.warn("[queryHaiku] 已禁用，直接返回空结果");
+  return {
+    message: {
+      content: [{ type: "text", text: "" }]
+    }
+  };
   const result = await withVCR(
     [
       createUserMessage({

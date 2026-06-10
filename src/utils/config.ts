@@ -237,12 +237,19 @@ export type GlobalConfig = {
   editorMode?: EditorMode
   bypassPermissionsModeAccepted?: boolean
   hasUsedBackslashReturn?: boolean
-  autoCompactEnabled: boolean // 控制是否启用自动压缩
+  autoCompactEnabled: boolean // 控制是否启用自动精简
   showTurnDuration: boolean // 控制是否显示轮次耗时消息（例如"已耗时 1m 6s"）
-  /**
-   * @deprecated 请改用 settings.env。
-   */
-  env: { [key: string]: string } // 为 CLI 设置的环境变量
+  prefersReducedMotion: boolean // 减少或禁用动画以提升无障碍性
+
+  // 上下文截断配置
+  truncate?: {
+    warnThreshold: number  // 警告阈值（token 数）
+    compactThreshold: number  // 精简阈值（token 数）
+    errorThreshold: number  // 错误阈值（token 数）
+    maxHistoryMessages: number  // 最大历史消息数
+    maxHistoryTokens: number  // 最大历史 token 数
+    keepLastMessages: number  // 始终保留最近 N 条消息
+  }
   hasSeenTasksHint?: boolean // 用户是否已看到任务提示
   hasUsedStash?: boolean // 用户是否已使用暂存功能 (Ctrl+S)
   hasUsedBackgroundTask?: boolean // 用户是否已将任务放入后台 (Ctrl+B)
@@ -630,10 +637,21 @@ function createDefaultGlobalConfig(): GlobalConfig {
     cachedGrowthBookFeatures: {},
     respectGitignore: true,
     copyFullResponse: false,
+    prefersReducedMotion: false,
   }
 }
 
 export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = createDefaultGlobalConfig()
+
+// 默认截断配置
+export const DEFAULT_TRUNCATE_CONFIG = {
+  warnThreshold: 3000,
+  compactThreshold: 3500,
+  errorThreshold: 4000,
+  maxHistoryMessages: 50,
+  maxHistoryTokens: 20000,
+  keepLastMessages: 20,
+}
 
 export const GLOBAL_CONFIG_KEYS = [
   'customApiEndpoint',
@@ -675,6 +693,9 @@ export const GLOBAL_CONFIG_KEYS = [
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
   'remoteDialogSeen',
+  'prefersReducedMotion',
+  // 截断配置（从环境变量读取）
+  'truncate',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]

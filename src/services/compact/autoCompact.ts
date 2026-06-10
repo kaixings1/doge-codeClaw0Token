@@ -29,7 +29,7 @@ import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 // Based on p99.99 of compact summary output being 17,387 tokens.
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 10_000
 
-// Returns the context window size minus the max output tokens for the model
+// 返回上下文窗口减去最大输出 tokens
 export function getEffectiveContextWindowSize(model: string): number {
   const reservedTokensForSummary = Math.min(
     getMaxOutputTokensForModel(model),
@@ -37,11 +37,21 @@ export function getEffectiveContextWindowSize(model: string): number {
   )
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
+  // 允许通过环境变量覆盖上下文窗口
   const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
     const parsed = parseInt(autoCompactWindow, 10)
     if (!isNaN(parsed) && parsed > 0) {
       contextWindow = Math.min(contextWindow, parsed)
+    }
+  }
+
+  // [新] 允许通过环境变量设置上下文窗口下限（防止过度截断）
+  const minContextWindow = process.env.CLAUDE_MIN_CONTEXT_WINDOW
+  if (minContextWindow) {
+    const minParsed = parseInt(minContextWindow, 10)
+    if (!isNaN(minParsed) && minParsed > 0) {
+      contextWindow = Math.max(contextWindow, minParsed)
     }
   }
 
@@ -64,10 +74,11 @@ export type AutoCompactTrackingState = {
 //export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
 //export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 
-export const AUTOCOMPACT_BUFFER_TOKENS = 8_000
-export const WARNING_THRESHOLD_BUFFER_TOKENS = 10_000
-export const ERROR_THRESHOLD_BUFFER_TOKENS = 10_000
-export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+// [FIX] 降低缓冲区阈值，提前触发压缩
+export const AUTOCOMPACT_BUFFER_TOKENS = 4_000
+export const WARNING_THRESHOLD_BUFFER_TOKENS = 5_000
+export const ERROR_THRESHOLD_BUFFER_TOKENS = 5_000
+export const MANUAL_COMPACT_BUFFER_TOKENS = 2_000
 
 // Stop trying autocompact after this many consecutive failures.
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)

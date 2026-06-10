@@ -1,11 +1,10 @@
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-export type ClawdPose = 'default' | 'blink' | 'heart' | 'angry' | 'sleep' | 'arms-up';
+export type ClawdPose = 'default' | 'blink' | 'heart' | 'angry' | 'sleep' | 'arms-up' | 'look-left' | 'look-right';
 
-export type ClawdPose = 'default' | 'blink' | 'heart' | 'angry' | 'sleep' | 'arms-up';
 
 type Props = {
-  pose: ClawdPose;
+  pose?: ClawdPose;
 };
 
 const GRAPHICS: Record<ClawdPose, string[]> = {
@@ -69,6 +68,26 @@ const GRAPHICS: Record<ClawdPose, string[]> = {
     " ╲    ✨       ╱ ",
     "  ╰──────────╯   ",
   ],
+  'look-left': [
+    "    ▴▃▃▃▃▃▃▃▴     ",
+    "  ╭───────────╮  ",
+    " ╱ ◕   ◕     ╲ ",
+    "│      ω      │",
+    "│    ‿    ‿   │",
+    "│   ███████   │",
+    " ╲             ╱ ",
+    "  ╰───────────╯  ",
+  ],
+  'look-right': [
+    "    ▴▃▃▃▃▃▃▃▴     ",
+    "  ╭───────────╮  ",
+    " ╱     ◕   ◕  ╲ ",
+    "│      ω      │",
+    "│    ‿    ‿   │",
+    "│   ███████   │",
+    " ╲             ╱ ",
+    "  ╰───────────╯  ",
+  ],
 };
 
 // 统一宽度，防止换行抖动
@@ -108,36 +127,17 @@ function renderLine(line: string, rowIdx: number, totalRows: number): React.Reac
   });
 }
 
-// 动态渲染：根据 pose 属性渲染对应的图形
+// 纯静态组件（不再有自动动画）
 export function Clawd({ pose = 'default' }: Props) {
-  const currentPose = pose;
+  const rows = GRAPHICS[pose];
 
-  // 监听 pose 变化并更新内部状态
-  useEffect(() => {
-    if (pose !== currentPose) {
-      setCurrentPose(pose);
-      poseChangedRef.current = true;
-    }
-  }, [pose]);
 
-  // 检测 pose 是否变化
-  useEffect(() => {
-    if (poseChangedRef.current && currentPose !== pose) {
-      poseChangedRef.current = false;
-    }
-  }, [pose]);
 
-  // 检测 pose 变化并重新渲染
-  useEffect(() => {
-    if (currentPose !== pose) {
-      setCurrentPose(pose);
-    }
-  }, [pose]);
 
   return (
     <Box flexDirection="column" alignItems="center">
-      {GRAPHICS[currentPose]?.map((line, idx) => (
-        <Text key={idx}>{renderLine(line, idx, GRAPHICS[currentPose]?.length || 0)}</Text>
+      {rows.map((line, idx) => (
+        <Text key={idx}>{renderLine(line, idx, rows.length)}</Text>
       ))}
     </Box>
   );

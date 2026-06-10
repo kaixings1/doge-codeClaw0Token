@@ -271,17 +271,6 @@ function cleanJsonString(raw: string): string {
 
   return result;
 }
-
-/**
- * 清理 JSON 字符串中的非法字符，如未转义的换行符。
- * 策略：将字符串内的所有换行符、回车替换为空格（因为 PowerShell 命令中换行通常可被空格替代）。
- */
-function cleanJsonString(json: string): string {
-  // 仅替换非转义的换行符：简单做法是全局替换 \n 和 \r 为空格
-  // 注意：这可能会破坏字符串中原本有意义的换行（极少见），但对于命令执行无影响。
-  return json.replace(/\n/g, ' ').replace(/\r/g, '')
-}
-
 /**
  * 检查消息是否需要工具调用处理（保持原名）
  */
@@ -387,7 +376,7 @@ export class MessageHandler extends EventEmitter {
    * 判断消息是否完整（用于流式分块场景）
    * 简单策略：最后一个字符是换行或 }，且 JSON 可解析则认为完整
    */
-  private isMessageComplete(text: string): boolean {
+  /*private isMessageComplete(text: string): boolean {
     const trimmed = text.trim()
     if (trimmed.endsWith('}') || trimmed.endsWith('\n')) {
       try {
@@ -402,8 +391,17 @@ export class MessageHandler extends EventEmitter {
       }
     }
     return false
+  }*/
+	private isMessageComplete(text: string): boolean {
+	  const trimmed = text.trim();
+	  // 如果包含 tool_json，必须能成功提取出完整调用才认为完整
+	  if (this.containsToolCall(trimmed)) {
+		const calls = this.extractToolCalls(trimmed);
+		return calls.length > 0;
   }
-
+	  // 否则只要以 } 或换行结尾就认为完整
+	  return trimmed.endsWith('}') || trimmed.endsWith('\n');
+	}
   private async _processToolCalls(message: string): Promise<void> {
     if (this.isProcessing) {
       this.logger.info('处理器正忙，加入队列')
@@ -537,17 +535,17 @@ export class MessageHandler extends EventEmitter {
     return new Promise(async (resolve, reject) => {
       const timer = this.options.timeout > 0
         ? setTimeout(() => reject(new Error(`工具调用超时 (${this.options.timeout}ms)`)), this.options.timeout)
-        : null
+		  : null;
       try {
-        // 调用外部执行器，传递原始字符串数组
-        const [result] = await handleToolCalls([item.raw])
-        if (timer) clearTimeout(timer)
-        resolve(result)
+		  const [jsonStr] = await handleToolCalls([item.raw]);
+		  const result = JSON.parse(jsonStr) as ToolCallResult; // 新增
+		  if (timer) clearTimeout(timer);
+		  resolve(result);
       } catch (e) {
-        if (timer) clearTimeout(timer)
-        reject(e)
+		  if (timer) clearTimeout(timer);
+		  reject(e);
       }
-    })
+	  });
   }
 
   private async finalizeSession(): Promise<void> {

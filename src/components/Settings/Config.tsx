@@ -263,8 +263,16 @@ export function Config({
     });
   }
 
-  // MCP servers configuration - managed through /mcp command
-  // Add MCP servers configuration panel entry
+  const customApiProvider = getGlobalConfig().customApiEndpoint?.provider;
+  const customApiProviderDisplay = customApiProvider === 'openai'
+    ? 'OpenAI-compatible'
+    : customApiProvider === 'gemini'
+      ? 'Gemini API'
+      : customApiProvider === 'anthropic'
+        ? 'Anthropic-compatible'
+        : 'Not set';
+
+  // TODO: Add MCP servers
   const settingsItems: Setting[] = [
   ...(feature('MCP_UI') ? [{
     id: 'mcpServers',
@@ -278,6 +286,26 @@ export function Config({
   }] : []),
   // Global settings
   {
+    id: 'customApiProvider',
+    label: `Compatible API provider: ${customApiProviderDisplay}`,
+    value: customApiProviderDisplay,
+    options: ['Anthropic-compatible', 'OpenAI-compatible', 'Gemini API'],
+    type: 'enum' as const,
+    onChange(value: string) {
+      const nextProvider = value === 'OpenAI-compatible' ? 'openai' : value === 'Gemini API' ? 'gemini' : value === 'Anthropic-compatible' ? 'anthropic' : undefined;
+      saveGlobalConfig(current => ({
+        ...current,
+        customApiEndpoint: {
+          ...current.customApiEndpoint,
+          provider: nextProvider,
+          openaiCompatMode: nextProvider === 'openai'
+            ? current.customApiEndpoint?.openaiCompatMode ?? 'chat_completions'
+            : undefined
+        }
+      }));
+      setGlobalConfig(getGlobalConfig());
+    }
+  }, {
     id: 'customApiBaseURL',
     label: `兼容 API Base URL：${customBaseURL || '未设置'}`,
     value: customBaseURL || '未设置',
@@ -340,7 +368,25 @@ export function Config({
       setCustomModelValue(nextValue);
       setGlobalConfig(getGlobalConfig());
     }
-  },
+  }, ...(customApiProvider === 'openai' ? [{
+    id: 'openAICompatMode',
+    label: `OpenAI compatible mode: ${openAICompatMode === 'responses' ? 'Responses' : 'Chat Completions'}`,
+    value: openAICompatMode,
+    options: ['chat_completions', 'responses'],
+    type: 'enum' as const,
+    onChange(value: string) {
+      const nextValue = value === 'responses' ? 'responses' : 'chat_completions';
+      saveGlobalConfig(current => ({
+        ...current,
+        customApiEndpoint: {
+          ...current.customApiEndpoint,
+          openaiCompatMode: nextValue
+        }
+      }));
+      setOpenAICompatMode(nextValue);
+      setGlobalConfig(getGlobalConfig());
+    }
+  }] : []),
   {
     id: 'autoCompactEnabled',
     label: '自动压缩',

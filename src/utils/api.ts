@@ -424,6 +424,14 @@ export function appendSystemContext(
   ].filter(Boolean)
 }
 
+// 限制用户上下文值的最大大小
+export const MAX_USER_CONTEXT_CHARS = 4000
+
+function truncateContextValue(value: string, maxLength: number = MAX_USER_CONTEXT_CHARS): string {
+  if (value.length <= maxLength) return value
+  return value.substring(0, maxLength) + '\n... (已截断用户上下文)'
+}
+
 export function prependUserContext(
   messages: Message[],
   context: { [k: string]: string },
@@ -436,10 +444,19 @@ export function prependUserContext(
     return messages
   }
 
+  // [FIX] 截断每个上下文值以防止上下文过长
+  // [FIX] 过滤掉 gitStatus 等大型上下文
+  const filteredContext = Object.fromEntries(
+    Object.entries(context).filter(([key]) => key !== 'gitStatus')
+  )
+  const truncatedContext = Object.fromEntries(
+    Object.entries(filteredContext).map(([key, value]) => [key, truncateContextValue(value)])
+  )
+
   return [
     createUserMessage({
       content: `<system-reminder>\n在回答用户问题时，你可以使用以下上下文：\n${Object.entries(
-        context,
+        truncatedContext,
       )
         .map(([key, value]) => `# ${key}\n${value}`)
         .join('\n')}

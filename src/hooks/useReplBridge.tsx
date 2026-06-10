@@ -164,10 +164,34 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
               const fields = extractInboundMessageFields(msg);
               if (!fields) return;
               const {
-                uuid
+                uuid,
+                toolUseBlocks
               } = fields;
 
-              // 动态导入，使桥接代码远离非 BRIDGE_MODE 构建。
+              // If tool_use blocks are present, process them as tool calls// 动态导入，使桥接代码远离非 BRIDGE_MODE 构建。
+              if (toolUseBlocks && toolUseBlocks.length > 0) {
+                logForDebugging(`[bridge:repl] 注入入站用户消息（包含 ${toolUseBlocks.length} 个工具调用）${uuid ? ` uuid=${uuid}` : ''}`);
+                // Create a user message with tool_use blocks
+                const userMessage = {
+                  type: 'user' as const,
+                  message: {
+                    role: 'user' as const,
+                    content: fields.content as any,
+                  },
+                  session_id: 'bridge-inbound',
+                  parent_tool_use_id: null,
+                  uuid: uuid || undefined,
+                };
+                // Enqueue as a special command that will be processed by the query loop
+                enqueue({
+                  value: userMessage,
+                  mode: 'prompt' as const,
+                  uuid,
+                  skipSlashCommands: true,
+                  bridgeOrigin: true
+                });
+              } else {
+                // Dynamic import to keep bridge code out of non-BRIDGE_MODE builds.
               const {
                 resolveAndPrepend
               } = await import('../bridge/inboundAttachments.js');
@@ -193,6 +217,7 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                 skipSlashCommands: true,
                 bridgeOrigin: true
               });
+              }
             } catch (e) {
               logForDebugging(`[bridge:repl] handleInboundMessage 失败：${e}`, {
                 level: 'error'

@@ -85,7 +85,6 @@ export function CondensedLogo() {
   const truncatedCwd = truncatePath(cwd, Math.max(cwdAvailableWidth, 10));
   let t4;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    // 始终使用 AnimatedClawd，移 fullscreen 限制
     t4 = <AnimatedClawd />;
     $[7] = t4;
   } else {

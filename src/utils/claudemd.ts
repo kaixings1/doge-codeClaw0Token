@@ -88,6 +88,7 @@ let hasLoggedInitialLoad = false
 const MEMORY_INSTRUCTION_PROMPT =
   '代码库和用户指令如下所示。请务必遵守这些指令。重要提示：这些指令会覆盖默认行为，你必须严格按其内容执行。'
 // 内存文件推荐的最大字符数
+// [FIX] 降低限制以减少上下文过长
 export const MAX_MEMORY_CHARACTER_COUNT = 40000
 
 // 允许通过 @include 指令包含的文件扩展名
@@ -1121,6 +1122,10 @@ export const getClaudeMds = (
     false,
   )
 
+  // [FIX] 记录总长度，截断以防止上下文过长
+  let totalLength = 0
+  const MAX_CLAUDE_MD_TOTAL_LENGTH = 15000
+
   for (const file of memoryFiles) {
     if (filter && !filter(file.type)) continue
     if (skipProjectLevel && (file.type === 'Project' || file.type === 'Local'))
@@ -1137,7 +1142,26 @@ export const getClaudeMds = (
                 ? '（用户的自动内存，跨对话持久化）'
                 : '（用户的所有项目的私有全局指令）'
 
-      const content = file.content.trim()
+      let content = file.content.trim()
+
+      // [FIX] 截断单个文件内容
+      if (content.length > 5000) {
+        content = content.substring(0, 5000) + '\n\n...(指令已截断，原文件 ' + file.path + ')'
+      }
+
+      // [FIX] 检查是否超过总长度限制
+      const entry = content
+      if (feature('TEAMMEM') && file.type === 'TeamMem') {
+        totalLength += entry.length + 100
+      } else {
+        totalLength += entry.length + 100
+      }
+
+      if (totalLength > MAX_CLAUDE_MD_TOTAL_LENGTH) {
+        memories.push('\n\n...(剩余指令已截断以防止上下文过长)')
+        break
+      }
+
       if (feature('TEAMMEM') && file.type === 'TeamMem') {
         memories.push(
           `${file.path}${description} 的内容：\n\n<team-memory-content source="shared">\n${content}\n</team-memory-content>`,
