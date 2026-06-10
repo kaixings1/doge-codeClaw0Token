@@ -52,7 +52,7 @@ function loadSavedScrollPosition(): { scrollTop: number; scrollHeight: number } 
 /**
  * 清除保存的滚动位置（例如在会话清空时）
  */
-function clearSavedScrollPosition() {
+export function clearSavedScrollPosition() {
   try {
     sessionStorage.removeItem(SCROLL_POSITION_KEY);
   } catch (e) {
