@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useCallback, useContext, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
 import { useVirtualScroll } from '../hooks/useVirtualScroll.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
+import { clearSavedScrollPosition } from '../ink/components/ScrollBox.js';
 import type { DOMElement } from '../ink/dom.js';
 import type { MatchPosition } from '../ink/render-to-screen.js';
 import { Box } from '../ink.js';
@@ -398,6 +399,14 @@ export function VirtualMessageList({
     messages,
     scrollToIndex
   };
+
+  // Clear saved scroll position when messages are cleared (session changes)
+  useEffect(() => {
+    // 当消息列表清空时清除保存的位置
+    if (messages.length === 0) {
+      clearSavedScrollPosition();
+    }
+  }, [messages.length]);
 
   // Keep cursor-selected message visible. offsets rebuilds every render
   // — as a bare dep this re-pinned on every mousewheel tick. Read through

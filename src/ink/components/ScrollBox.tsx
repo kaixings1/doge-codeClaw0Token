@@ -7,6 +7,58 @@ import { markCommitStart } from '../reconciler.js';
 import type { Styles } from '../styles.js';
 import '../global.d.ts';
 import Box from './Box.js';
+
+// 滚动位置持久化 key
+const SCROLL_POSITION_KEY = 'doge:scrollPosition';
+
+/**
+ * 保存当前滚动位置到 sessionStorage
+ */
+function saveScrollPosition(sessionId: string, scrollTop: number, scrollHeight: number) {
+  try {
+    const position = {
+      scrollTop,
+      scrollHeight,
+      savedAt: Date.now(),
+    };
+    sessionStorage.setItem(SCROLL_POSITION_KEY, JSON.stringify(position));
+  } catch (e) {
+    // sessionStorage 可能不可用或已溢出
+    console.warn('Failed to save scroll position:', e);
+  }
+}
+
+/**
+ * 从 sessionStorage 恢复滚动位置
+ * @returns 滚动位置信息，如果没有保存的位置则返回 null
+ */
+function loadSavedScrollPosition(): { scrollTop: number; scrollHeight: number } | null {
+  try {
+    const saved = sessionStorage.getItem(SCROLL_POSITION_KEY);
+    if (saved) {
+      const position = JSON.parse(saved) as { scrollTop: number; scrollHeight: number; savedAt: number };
+      // 位置数据在 24 小时内有效
+      if (Date.now() - position.savedAt < 24 * 60 * 60 * 1000) {
+        return { scrollTop: position.scrollTop, scrollHeight: position.scrollHeight };
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn('Failed to load scroll position:', e);
+    return null;
+  }
+}
+
+/**
+ * 清除保存的滚动位置（例如在会话清空时）
+ */
+function clearSavedScrollPosition() {
+  try {
+    sessionStorage.removeItem(SCROLL_POSITION_KEY);
+  } catch (e) {
+    console.warn('Failed to clear scroll position:', e);
+  }
+}
 export type ScrollBoxHandle = {
   scrollTo: (y: number) => void;
   scrollBy: (dy: number) => void;
@@ -59,6 +111,14 @@ export type ScrollBoxHandle = {
    * cold start).
    */
   setClampBounds: (min: number | undefined, max: number | undefined) => void;
+  /** Get the saved scroll position for restoration */
+  getSavedScrollPosition: () => { scrollTop: number; scrollHeight: number } | null;
+  /** Save current scroll position to sessionStorage */
+  saveScrollPosition: (scrollTop?: number, scrollHeight?: number) => void;
+  /** Restore scroll position from sessionStorage */
+  restoreScrollPosition: () => number | null;
+  /** Clear saved scroll position */
+  clearScrollPosition: () => void;
 };
 export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX' | 'overflowY'> & {
   ref?: Ref<ScrollBoxHandle>;
@@ -67,6 +127,11 @@ export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX
    * grows. Unset manually via scrollTo/scrollBy to break the stickiness.
    */
   stickyScroll?: boolean;
+  /**
+   * When true, restores the scroll position from sessionStorage on mount.
+   * Useful for preserving scroll position across page refreshes.
+   */
+  restoreOnMount?: boolean;
 };
 
 /**
@@ -83,6 +148,7 @@ function ScrollBox({
   children,
   ref,
   stickyScroll,
+  restoreOnMount = false,
   ...style
 }: PropsWithChildren<ScrollBoxProps>): React.ReactNode {
   const domRef = useRef<DOMElement>(null);
@@ -97,9 +163,55 @@ function ScrollBox({
   const [, forceRender] = useState(0);
   const listenersRef = useRef(new Set<() => void>());
   const renderQueuedRef = useRef(false);
+  const savedPositionRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+
+  // 在组件挂载时恢复保存的滚动位置
+  React.useEffect(() => {
+    if (restoreOnMount && domRef.current) {
+      const saved = loadSavedScrollPosition();
+      if (saved) {
+        savedPositionRef.current = saved;
+        // 检查当前 scrollHeight 是否匹配，如果不匹配则不恢复
+        const currentScrollHeight = domRef.current.scrollHeight;
+        if (Math.abs(currentScrollHeight - saved.scrollHeight) < 10) {
+          // 滚动位置相近，恢复滚动位置
+          domRef.current.scrollTop = saved.scrollTop;
+          console.log('[ScrollBox] Restored scroll position:', saved);
+        } else {
+          console.log('[ScrollBox] Scroll height mismatch, not restoring position');
+        }
+      }
+    }
+    // 清理定时器
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const notify = () => {
     for (const l of listenersRef.current) l();
   };
+  // 防抖保存滚动位置的定时器
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 保存滚动位置到 sessionStorage
+  const debouncedSavePosition = React.useCallback(() => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      const el = domRef.current;
+      if (el) {
+        const scrollTop = el.scrollTop;
+        const scrollHeight = el.scrollHeight;
+        savedPositionRef.current = { scrollTop, scrollHeight };
+        saveScrollPosition('', scrollTop, scrollHeight);
+      }
+    }, 100); // 100ms 防抖
+  }, []);
+
   function scrollMutated(el: DOMElement): void {
     // Signal background intervals (IDE poll, LSP poll, GCS fetch, orphan
     // check) to skip their next tick — they compete for the event loop and
@@ -108,6 +220,8 @@ function ScrollBox({
     markDirty(el);
     markCommitStart();
     notify();
+    // 触发保存滚动位置（防抖）
+    debouncedSavePosition();
     if (renderQueuedRef.current) return;
     renderQueuedRef.current = true;
     queueMicrotask(() => {
@@ -195,6 +309,31 @@ function ScrollBox({
       if (!el) return;
       el.scrollClampMin = min;
       el.scrollClampMax = max;
+    },
+    /** 获取保存的滚动位置（用于恢复） */
+    getSavedScrollPosition: () => savedPositionRef.current,
+    /** 保存当前滚动位置到 sessionStorage */
+    saveScrollPosition: (scrollTop?: number, scrollHeight?: number) => {
+      const el = domRef.current;
+      if (!el) return;
+      const top = scrollTop ?? el.scrollTop;
+      const height = scrollHeight ?? el.scrollHeight;
+      savedPositionRef.current = { scrollTop: top, scrollHeight: height };
+      saveScrollPosition('', top, height);
+    },
+    /** 恢复保存的滚动位置 */
+    restoreScrollPosition: () => {
+      const saved = loadSavedScrollPosition();
+      if (saved && domRef.current) {
+        savedPositionRef.current = saved;
+        return saved.scrollTop;
+      }
+      return null;
+    },
+    /** 清除保存的滚动位置 */
+    clearScrollPosition: () => {
+      savedPositionRef.current = null;
+      clearSavedScrollPosition();
     }
   }),
   // notify/scrollMutated are inline (no useCallback) but only close over

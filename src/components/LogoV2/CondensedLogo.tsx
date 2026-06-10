@@ -85,14 +85,14 @@ export function CondensedLogo() {
   const truncatedCwd = truncatePath(cwd, Math.max(cwdAvailableWidth, 10));
   let t4;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <AnimatedClawd />;
+    t4 = <Box paddingY={1}><AnimatedClawd /></Box>;
     $[7] = t4;
   } else {
     t4 = $[7];
   }
   let t5;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = <Text bold={true}>Claude Code</Text>;
+    t5 = <Text bold={true} paddingX={1}>Claude Code</Text>;
     $[8] = t5;
   } else {
     t5 = $[8];

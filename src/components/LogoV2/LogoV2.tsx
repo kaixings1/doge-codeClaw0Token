@@ -254,7 +254,7 @@ export function LogoV2() {
   }
   const layoutMode = getLayoutMode(columns);
   const userTheme = resolveThemeSetting(getGlobalConfig().theme);
-  const borderTitle = ` ${color("claude", userTheme)("Claude Code")} ${color("inactive", userTheme)(`v${version}`)} `;
+  const borderTitle = ` ${color("claude", userTheme)(" Claude Code")} ${color("inactive", userTheme)(`v${version}`)} `;
   const compactBorderTitle = color("claude", userTheme)(" Claude Code ");
   if (layoutMode === "compact") {
     let welcomeMessage = formatWelcomeMessage(username);
@@ -333,7 +333,7 @@ export function LogoV2() {
       t18 = $[42];
       t19 = $[43];
     }
-    return <><OffscreenFreeze><Box flexDirection="column" borderStyle="round" borderColor="claude" borderText={t11} paddingX={1} paddingY={1} alignItems="center" width={columns}><Text bold={true}>{welcomeMessage}</Text>{t12}{compactUpdateNotice && <Text color="warning">{compactUpdateNotice}</Text>}{t13}<Text dimColor={true}>{billingType}{process.env.ANTHROPIC_BASE_URL ? ` · ${process.env.ANTHROPIC_BASE_URL}` : ''}</Text><Text dimColor={true}>{agentName ? `@${agentName} · ${truncatedCwd}` : truncatedCwd}</Text></Box></OffscreenFreeze>{t14}{t15}{t16}{t17}{t18}{t19}</>;
+    return <><OffscreenFreeze><Box flexDirection="column" borderStyle="round" borderColor="claude" borderText={t11} paddingX={1} paddingY={1} alignItems="center" width={columns}><Text bold={true}>{welcomeMessage}</Text>{t12}{compactUpdateNotice && <Text color="warning" marginTop={1}>{compactUpdateNotice}</Text>}{t13}<Text dimColor={true} marginTop={1}>{billingType}{process.env.ANTHROPIC_BASE_URL ? ` · ${process.env.ANTHROPIC_BASE_URL}` : ''}</Text><Text dimColor={true}>{agentName ? `@${agentName} · ${truncatedCwd}` : truncatedCwd}</Text></Box></OffscreenFreeze>{t14}{t15}{t16}{t17}{t18}{t19}</>;
   }
   const welcomeMessage_0 = formatWelcomeMessage(username);
   const modelLine = !process.env.IS_DEMO && config.oauthAccount?.organizationName ? `${modelDisplayName} · ${billingType} · ${config.oauthAccount.organizationName}` : `${modelDisplayName} · ${billingType}${process.env.ANTHROPIC_BASE_URL ? ` · ${process.env.ANTHROPIC_BASE_URL}` : ''}`;
@@ -341,6 +341,10 @@ export function LogoV2() {
   const truncatedCwd_0 = truncatePath(cwd, Math.max(cwdAvailableWidth_0, 10));
   const cwdLine = agentName ? `@${agentName} · ${truncatedCwd_0}` : truncatedCwd_0;
   const optimalLeftWidth = calculateOptimalLeftWidth(welcomeMessage_0, cwdLine, modelLine);
+
+  // 计算居中偏移
+  const totalLeftWidth = Math.min(optimalLeftWidth, LEFT_PANEL_MAX_WIDTH);
+  const centeredMargin = Math.max(0, Math.floor((columns - totalLeftWidth) / 2));
   const {
     leftWidth,
     rightWidth
@@ -359,7 +363,7 @@ export function LogoV2() {
       content: borderTitle,
       position: "top",
       align: "start",
-      offset: 3
+      offset: 2
     };
     $[44] = borderTitle;
     $[45] = t14;
@@ -372,7 +376,7 @@ export function LogoV2() {
   const t17 = 1;
   let t18;
   if ($[46] !== welcomeMessage_0) {
-    t18 = <Box marginTop={1}><Text bold={true}>{welcomeMessage_0}</Text></Box>;
+    t18 = <Box paddingX={centeredMargin}><Text bold={true}>{welcomeMessage_0}</Text></Box>;
     $[46] = welcomeMessage_0;
     $[47] = t18;
   } else {
@@ -380,14 +384,14 @@ export function LogoV2() {
   }
   let t19;
   if ($[48] === Symbol.for("react.memo_cache_sentinel")) {
-    t19 = <Box marginY={2} alignItems="center"><AnimatedClawd /></Box>;
+    t19 = <Box marginY={2} paddingX={centeredMargin} alignItems="center"><AnimatedClawd /></Box>;
     $[48] = t19;
   } else {
     t19 = $[48];
   }
   let t20;
   if ($[49] !== modelLine) {
-    t20 = <Text dimColor={true}>{modelLine}</Text>;
+    t20 = <Box paddingX={centeredMargin}><Text dimColor={true}>{modelLine}</Text></Box>;
     $[49] = modelLine;
     $[50] = t20;
   } else {
@@ -395,7 +399,7 @@ export function LogoV2() {
   }
   let t21;
   if ($[51] !== cwdLine) {
-    t21 = <Text dimColor={true}>{cwdLine}</Text>;
+    t21 = <Box paddingX={centeredMargin}><Text dimColor={true}>{cwdLine}</Text></Box>;
     $[51] = cwdLine;
     $[52] = t21;
   } else {
@@ -421,7 +425,7 @@ export function LogoV2() {
     t24 = $[61];
   }
   const t25 = layoutMode === "horizontal" && <FeedColumn feeds={rightFeeds} maxWidth={rightWidth} />;
-  const t25_0 = layoutMode === "horizontal" && <Box flexDirection="column" width={rightColumnWidth} minHeight={10} justifyContent={fullUpdateNotice ? "space-between" : "flex-start"}>{t25}{fullUpdateNotice && <Box flexDirection="column" width={rightColumnWidth}><Divider color="claude" width={rightColumnWidth} /><Text color="warning">✦ {fullUpdateNotice}</Text></Box>}</Box>;
+  const t25_0 = layoutMode === "horizontal" && <Box flexDirection="column" width={rightColumnWidth} minHeight={10} justifyContent={fullUpdateNotice ? "space-between" : "flex-start"}><Box paddingX={centeredMargin}>{t25}</Box>{fullUpdateNotice && <Box flexDirection="column" width={rightColumnWidth}><Divider color="claude" width={rightColumnWidth} /><Text color="warning">✦ {fullUpdateNotice}</Text></Box>}</Box>;
   let t26;
   if ($[62] !== T2 || $[63] !== t15 || $[64] !== t23 || $[65] !== t24 || $[66] !== t25_0) {
     t26 = <T2 flexDirection={t15} paddingX={t16} gap={t17}>{t23}{t24}{t25_0}</T2>;
