@@ -770,18 +770,30 @@ function renderNodeToOutput(
 
         // 添加阈值判断：只有当用户真正接近底部时才认为是"在底部"
         // 防止 logo 刷新等小内容变化导致滚动条被拉到底部
-        // 阈值设为 10 行：用户离底部超过 10 行时不认为是"在底部"
+        // 阈值设为 15 行：用户离底部超过 15 行时不认为是"在底部"
         // 增加阈值以更好地容忍动画导致的高度抖动
-        const SCROLL_THRESHOLD = 10
+        // 同时检查 scrollTop 是否超过 viewportHeight 的 20%，防止在顶部附近误判
+        const SCROLL_THRESHOLD = 15
+        const viewportHeight = innerHeight
+        const scrollTopRatio = scrollTopBeforeFollow / Math.max(1, viewportHeight)
+        const notNearTop = scrollTopRatio > 0.2 // 不在顶部 20% 区域内
         const atBottom =
           sticky ||
           (grew &&
             !hasActiveSelection &&
             scrollTopBeforeFollow >= prevMaxScroll &&
-            scrollTopBeforeFollow >= prevMaxScroll - SCROLL_THRESHOLD)
+            scrollTopBeforeFollow >= prevMaxScroll - SCROLL_THRESHOLD &&
+            notNearTop) // 不在顶部附近
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
-          node.pendingScrollDelta = undefined
+          // 防止在 logo 动画期间触发滚动 - 检查内容是否在增长
+          // 如果 scrollHeight 变化较大，说明可能是 logo 动画导致的，不要自动滚动
+          const heightChange = scrollHeight - prevScrollHeight;
+          if (heightChange > 5) {
+            // 内容增长超过 5 行，可能是 logo 动画，跳过自动滚动
+          } else {
+            node.pendingScrollDelta = undefined;
+          }
           // Sync flag so useVirtualScroll's isSticky() agrees with positional
           // state — sticky-broken-but-at-bottom (wheel tremor, click-select
           // at max) otherwise leaves useVirtualScroll's clamp holding the
